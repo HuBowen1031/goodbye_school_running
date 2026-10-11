@@ -675,15 +675,16 @@ vrun cleanup                                  # 手动紧急清除
 
 - `PreviewMath.swift` **只能**实现 §3.6 的闭式解，且必须与 `tests/golden/estimate.json` 对齐。
   它**不是**第二真相源：松手 250 ms 后仍以侧车 `estimate.result` 为准（§5.6）。
-- `SidecarClient` 启动侧车时必须用 python 的**绝对路径**
-  （`/Users/yuanjun/miniconda3/envs/vrun/bin/python`），不依赖 PATH
-  —— 因为 conda 不在非交互 shell 的 PATH（works.md §1.3 实测）。
+- `SidecarClient` 启动侧车时必须用 python 的**绝对路径**，但该路径
+  **一律由 `scripts/resolve_python.sh` 解析**（§7.1），任何地方都不得硬编码。
+  两个理由：① conda 不在非交互 shell 的 PATH（works.md §1.3 实测）；
+  ② 环境的实际位置由 conda `envs_dirs` 决定，写死必错（findings.md F7）。
 - GUI 被强杀时**无法保证清理**。因此 `SessionController` 要在 App **启动时主动发一次
   `device.cleanup`**，把上一次崩溃残留的虚拟定位一并扫掉。
 
 ---
 
-## 6. 测试 · `tests/`（8 个文件）
+## 6. 测试 · `tests/`（9 个文件）
 
 | 文件 | 覆盖内容 | 里程碑 |
 | --- | --- | --- |
@@ -695,6 +696,7 @@ vrun cleanup                                  # 手动紧急清除
 | `tests/test_engine.py` | **假时钟离线跑完 3 km**；平均速度 ±1%；总距离 ±0.5% | M1 |
 | `tests/test_estimate.py` ★ | §5.4 golden 全表逐行断言；严苛档返回 `None`；贴线不阻止 | M1 |
 | `tests/golden/estimate.json` ★ | §5.4 全表基准数据，**pytest 与 Swift 单测共用** | M1 |
+| `tests/test_env_resolution.py` | F7 回归：解出的解释器可用 / 版本 3.12 / 含项目依赖；环境名不存在时**报错而非静默回落** | M0 |
 
 ### 6.1 关于 `golden/estimate.json`
 
@@ -705,10 +707,11 @@ vrun cleanup                                  # 手动紧急清除
 
 ---
 
-## 7. 脚本 · `scripts/`（4 个）
+## 7. 脚本 · `scripts/`（5 个）
 
 | 文件 | 职责 | 里程碑 |
 | --- | --- | --- |
+| `scripts/resolve_python.sh` ★ | **解释器路径的唯一入口**（F7）：`$VRUN_PYTHON` → `envs_dirs` 探测 → `conda env list --json` → 约定位置兜底 | M0 |
 | `scripts/bootstrap_env.sh` | 用 conda 全路径建 `vrun` 环境（python=3.12）并 `pip install -r requirements.txt` | M0 |
 | `scripts/preflight.sh` | 设备前置检查自动化：连接 / DDI / 隧道 / 探针就绪状态 | M0 |
 | `scripts/panic-clear.sh` | **紧急清除**：GUI 崩溃或进程被杀后，一条命令恢复定位 | M2 |
@@ -722,6 +725,44 @@ CONDA=/Users/yuanjun/miniconda3/bin/conda
 ```
 
 这条备忘在 works.md §1.3 已实测确认（`command -v conda` 为空）。
+
+**但它只覆盖 conda 本体。解释器另有一条更硬的规则（F7）：**
+
+> ❌ 不许写 `/Users/yuanjun/miniconda3/envs/vrun/bin/python`
+> ✅ 一律 `PY="$(scripts/resolve_python.sh)"`
+
+两者**刻意区别对待**：`~/miniconda3` 是安装位，不会自己挪；
+而**环境**的位置由 `conda config` 的 `envs_dirs` 决定，本机就落在 `~/.conda/envs`。
+稳定性不同，不该一刀切。
+
+### 7.1 `resolve_python.sh`：解释器路径的唯一入口（F7 的产物）
+
+findings.md F7 查明：原先文档里硬编码的解释器路径在本机**根本不存在**，
+Swift 侧车一启动就会失败。修正后，解释器路径**只有一个来源**。
+
+```mermaid
+flowchart TD
+    A["resolve_python.sh"] --> B{"① VRUN_PYTHON 已设置?"}
+    B -->|是| B1["校验通过即采用"]
+    B -->|否| C{"② conda config --show envs_dirs"}
+    C -->|"<dir>/vrun/bin/python 可用"| C1["采用"]
+    C -->|未命中| D{"③ conda env list --json 取 vrun 的 prefix"}
+    D -->|"<prefix>/bin/python 可用"| D1["采用"]
+    D -->|未命中| E["④ ~/miniconda3/envs/vrun 兜底"]
+    E -->|仍不可用| F["❌ exit 1 + 补救提示"]
+```
+
+**三条设计纪律**：
+
+| 纪律 | 为什么 |
+| --- | --- |
+| 候选须过「存在 + 可执行 + 是 Python 3」三关 | 挡住「目录还在但环境已坏」与「指到非 Python 文件」；否则失败会推迟到侧车启动才暴露 |
+| 环境名找不到时**报错退出**，绝不回落 | 静默换一个解释器比直接失败危险得多 —— 它会用错环境跑出「看起来正常」的轨迹 |
+| stdout 只输出一行路径，诊断走 stderr | 保证 `PY=$(scripts/resolve_python.sh)` 可安全用于命令替换 |
+
+> **回归护栏**：`tests/test_env_resolution.py`（§6）。
+> 它断言的不是某个固定字符串 —— 那本身就是硬编码 —— 而是
+> 「解出的解释器确实可用、且确实是本项目的那一个」。
 
 ---
 

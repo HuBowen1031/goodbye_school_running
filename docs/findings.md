@@ -188,7 +188,7 @@ E[s²] ≈ σ² · (1 − 2τ/T)
 
 ---
 
-## F7 ★ 侧车 Python 的绝对路径与实测不符（会直接让功能失效）
+## F7 ★ 侧车 Python 的绝对路径与实测不符（会直接让功能失效）—— 已修复
 
 **涉及**：docs/file-manifest.md §5.2
 
@@ -210,15 +210,35 @@ vrun    /Users/yuanjun/.conda/envs/vrun
 **影响等级**：与 F1–F6 不同，这不是精度或口径问题 ——
 Swift 侧车会**启动失败**，整个 M1 的 GUI 部分无法工作。
 
-**修正建议**：
+**处置（已实施，2026-10-11）**：采纳「解析 prefix」方案，不写死任何解释器路径。
 
-1. 最小修正：把绝对路径改成 `/Users/yuanjun/.conda/envs/vrun/bin/python`。
-2. 更稳做法：不硬编码，在首次运行时用 `conda env list --json` 解析出该环境的
-   `prefix`，或读取一个随项目提交的 `vrun.env` 小配置。
-3. 无论哪种，都要保留「**不依赖 PATH**」这条约束 ——
-   conda 确实不在非交互 shell 的 PATH（works.md §1.3 实测，本轮再次确认）。
+新增 `scripts/resolve_python.sh` 作为解释器路径的**唯一入口**，解析顺序：
+`$VRUN_PYTHON` → `conda config --show envs_dirs` 探测 →
+`conda env list --json` 取 prefix → `~/miniconda3/envs` 兜底。
+完整规则与设计纪律见 file-manifest.md §7.1。
 
-> 本条**未自行修改文档**：涉及另一个文件的路径常量，且两种方案有取舍，由用户定。
+本机实测（本轮）：
+
+```
+$ scripts/resolve_python.sh
+/Users/yuanjun/.conda/envs/vrun/bin/python      # 规则 2 一次命中
+
+$ VRUN_ENV_NAME=vrun-nope-xyz scripts/resolve_python.sh
+resolve_python: 找不到环境 'vrun-nope-xyz' 的 Python 解释器。   # exit 1，不回落
+```
+
+**为什么不选「最小修正」（直接把路径改成 `~/.conda/envs/...`）**：
+那只是把一个错误的硬编码，换成一个**暂时正确**的硬编码。`envs_dirs` 是可配置的，
+换台机器、或改一次 conda 配置就会再次失效 —— 而这次的代价是「GUI 一启动就失败」，
+属于最难排查的一类问题。
+
+**连带修正**：`docs/file-manifest.md` §5.2 / §7（新增 §7.1）、`works.md` §4.4 与 M0 清单。
+
+**回归护栏**：新增 `tests/test_env_resolution.py`（7 条用例），断言解出的解释器
+可用、版本为 3.12、含项目依赖，且环境名不存在时**报错而非静默回落**。
+
+> `conda` **本体**的路径（`~/miniconda3/bin/conda`）仍保持全路径写法，这是有意的：
+> miniconda3 的安装位相对稳定，而**环境**的位置不稳定。两者稳定性不同，不该一刀切。
 
 ---
 
@@ -232,4 +252,4 @@ Swift 侧车会**启动失败**，整个 M1 的 GUI 部分无法工作。
 | F4 | 建模固有性质 | v_actual 有 ~0.2 几何抖动 | 测试改用相对断言 |
 | F5 | 统计估计量偏差 | σ 被低估最多 15% | 多种子 + 解析修正 |
 | F6 | 实现遗漏 | η(t) 恒为 0 | 补实现，独立随机流 |
-| F7 | **路径错误** | 侧车启动会失败 | 待用户定修正方案 |
+| F7 | **路径错误** | 侧车启动会失败 | ✅ 已修：`resolve_python.sh` 解析 prefix + 回归测试 |

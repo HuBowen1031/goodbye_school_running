@@ -373,9 +373,11 @@ Virtual_Location_Software_For_Apple/
 │   ├── test_estimate.py             # ★ 配速 / ETA / 安全带
 │   ├── test_geo.py / test_route.py / test_profile.py
 │   ├── test_noise.py / test_engine.py
+│   ├── test_env_resolution.py       # F7 回归：解释器解析必须可用
 │   └── golden/estimate.json         # ★ 两侧共享的基准值（防公式漂移）
 ├── scripts/
 │   ├── bootstrap_env.sh        # 建 conda 环境（全路径调用 conda）
+│   ├── resolve_python.sh       # ★ 解析解释器路径（F7；任何地方不许硬编码）
 │   ├── build_app.sh            # SwiftPM 构建 + 组装 .app
 │   ├── preflight.sh            # 设备前置检查
 │   └── panic-clear.sh          # 紧急清除模拟定位
@@ -577,6 +579,9 @@ environment.yml            ← conda 层：python 版本、conda 包
 - [ ] 用 `pip install -r requirements.txt` 安装依赖（`pymobiledevice3` / `numpy` / `pytest`）；
       `environment.yml` 的 pip 段只写 `-r requirements.txt`，不重复列举（§4.5）
 - [ ] 记录 **conda 不在非交互 PATH** 的调用方式，写入 `scripts/*.sh` 头部
+- [x] **解释器路径一律解析、绝不硬编码**：`scripts/resolve_python.sh`
+      （F7：本机环境在 `~/.conda/envs/vrun`，写死会直接让侧车启动失败；
+      回归护栏 `tests/test_env_resolution.py`）
 - [ ] **Xcode 验证**（用户手动装组件后执行）：
       `sudo xcode-select -s /Applications/Xcode.app && sudo xcodebuild -runFirstLaunch`
       然后确认 `xcode-select -p` 指向 Xcode.app、`xcodebuild -version` 输出正常
