@@ -188,6 +188,40 @@ E[s²] ≈ σ² · (1 − 2τ/T)
 
 ---
 
+## F7 ★ 侧车 Python 的绝对路径与实测不符（会直接让功能失效）
+
+**涉及**：docs/file-manifest.md §5.2
+
+文档要求 `SidecarClient` 用**绝对路径**启动侧车：
+
+```
+/Users/yuanjun/miniconda3/envs/vrun/bin/python
+```
+
+但本机 conda 的 `envs_dirs` 配置把新建环境放在了 `~/.conda/envs/`：
+
+```
+$ conda env list | grep vrun
+vrun    /Users/yuanjun/.conda/envs/vrun
+```
+
+`/Users/yuanjun/miniconda3/envs/vrun/` **并不存在**（实测 `ls` 报 ENOENT）。
+
+**影响等级**：与 F1–F6 不同，这不是精度或口径问题 ——
+Swift 侧车会**启动失败**，整个 M1 的 GUI 部分无法工作。
+
+**修正建议**：
+
+1. 最小修正：把绝对路径改成 `/Users/yuanjun/.conda/envs/vrun/bin/python`。
+2. 更稳做法：不硬编码，在首次运行时用 `conda env list --json` 解析出该环境的
+   `prefix`，或读取一个随项目提交的 `vrun.env` 小配置。
+3. 无论哪种，都要保留「**不依赖 PATH**」这条约束 ——
+   conda 确实不在非交互 shell 的 PATH（works.md §1.3 实测，本轮再次确认）。
+
+> 本条**未自行修改文档**：涉及另一个文件的路径常量，且两种方案有取舍，由用户定。
+
+---
+
 ## 汇总
 
 | 编号 | 类型 | 影响 | 处置 |
@@ -198,3 +232,4 @@ E[s²] ≈ σ² · (1 − 2τ/T)
 | F4 | 建模固有性质 | v_actual 有 ~0.2 几何抖动 | 测试改用相对断言 |
 | F5 | 统计估计量偏差 | σ 被低估最多 15% | 多种子 + 解析修正 |
 | F6 | 实现遗漏 | η(t) 恒为 0 | 补实现，独立随机流 |
+| F7 | **路径错误** | 侧车启动会失败 | 待用户定修正方案 |
