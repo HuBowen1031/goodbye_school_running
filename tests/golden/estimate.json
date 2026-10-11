@@ -1,0 +1,205 @@
+{
+  "schema_version": 1,
+  "_doc": [
+    "跨语言契约：Python 侧 tests/test_estimate.py 与 Swift 侧 PreviewMath 单测共用同一份基准。",
+    "两边都通过，才说明「预览与实际一致」不是巧合。",
+    "数值来源：works.md §5.4 基准数值表 —— 这是唯一允许手工维护的数值表。",
+    "生成上下文：δ=-1.5%, f=+5%, t_w=30s, r0=0.8, 真实噪声, 1 Hz, 距离 3.00 km。",
+    "safety 字段按 works.md §5.3 的**规则表**推导；doc_safety 保留 §5.4 原文，两者分歧见 document_contradictions。"
+  ],
+  "context": {
+    "distance_m": 3000.0,
+    "noise_level": "realistic",
+    "sample_rate_hz": 1.0,
+    "delta": -0.015,
+    "finish_boost": 0.05,
+    "warmup_s": 30.0,
+    "start_ratio": 0.8,
+    "ramp_floor_kmh": 6.3,
+    "ramp_ceil_kmh": 16.7
+  },
+  "tolerances": {
+    "_doc": "文档是给人看的，保留位有限；这里是各列允许的绝对误差。",
+    "eta_naive_s": 0.5,
+    "eta_s": 2.0,
+    "v_lo": 0.15,
+    "v_hi": 0.15,
+    "_why_v_lo_wide": [
+      "文档把 σ 舍入成 2.0 之后又代回了公式，而实现用精确的 1.9552。",
+      "两者天然差 2×(2.0−1.9552)=0.09，叠加显示层舍入可达 0.14。",
+      "这是文档口径问题，不是计算错误。"
+    ]
+  },
+  "safety_rules": {
+    "_source": "works.md §5.3 判定表",
+    "green": "v_lo ≥ 6 且 v_hi ≤ 17（2σ 内绝不越界）",
+    "yellow": "1σ 内安全、2σ 越界（临界，偶发误判）",
+    "red": "其余（很可能被 App 误判）",
+    "_bands_kmh": {
+      "green_2sigma": [10.06, 12.47],
+      "yellow_1sigma": [8.08, 14.33]
+    }
+  },
+  "rows": [
+    {
+      "speed_kmh": 6.0,
+      "pace": "10:00",
+      "eta_naive_s": 1800.0,
+      "eta_s": 1813.0,
+      "v_lo": 1.9,
+      "v_hi": 10.3,
+      "safety": "red",
+      "doc_safety": "red",
+      "note": "两端越界"
+    },
+    {
+      "speed_kmh": 8.0,
+      "pace": "7:30",
+      "eta_naive_s": 1350.0,
+      "eta_s": 1360.0,
+      "v_lo": 3.9,
+      "v_hi": 12.4,
+      "safety": "red",
+      "doc_safety": "red",
+      "note": "下界越界"
+    },
+    {
+      "speed_kmh": 9.0,
+      "pace": "6:40",
+      "eta_naive_s": 1200.0,
+      "eta_s": 1210.0,
+      "v_lo": 4.9,
+      "v_hi": 13.5,
+      "safety": "yellow",
+      "doc_safety": "red",
+      "note": "下界越界；doc_safety 与 §5.3 规则表冲突"
+    },
+    {
+      "speed_kmh": 10.0,
+      "pace": "6:00",
+      "eta_naive_s": 1080.0,
+      "eta_s": 1089.0,
+      "v_lo": 5.9,
+      "v_hi": 14.5,
+      "safety": "yellow",
+      "doc_safety": "yellow",
+      "note": "临界；精确 σ 下距绿灯下沿仅 0.06"
+    },
+    {
+      "speed_kmh": 10.2,
+      "pace": "5:53",
+      "eta_naive_s": 1059.0,
+      "eta_s": 1068.0,
+      "v_lo": 6.0,
+      "v_hi": 14.7,
+      "safety": "green",
+      "doc_safety": "green",
+      "note": "2σ 安全带下沿"
+    },
+    {
+      "speed_kmh": 12.0,
+      "pace": "5:00",
+      "eta_naive_s": 900.0,
+      "eta_s": 908.0,
+      "v_lo": 7.8,
+      "v_hi": 16.6,
+      "safety": "green",
+      "doc_safety": "green"
+    },
+    {
+      "speed_kmh": 12.4,
+      "pace": "4:50",
+      "eta_naive_s": 871.0,
+      "eta_s": 878.0,
+      "v_lo": 8.2,
+      "v_hi": 17.0,
+      "safety": "green",
+      "doc_safety": "green",
+      "note": "2σ 安全带上沿；精确 σ 下上界 16.93，刚好压线"
+    },
+    {
+      "speed_kmh": 13.0,
+      "pace": "4:37",
+      "eta_naive_s": 831.0,
+      "eta_s": 838.0,
+      "v_lo": 8.8,
+      "v_hi": 17.7,
+      "safety": "yellow",
+      "doc_safety": "red",
+      "note": "上界越界；doc_safety 与 §5.3 规则表冲突"
+    },
+    {
+      "speed_kmh": 14.0,
+      "pace": "4:17",
+      "eta_naive_s": 771.0,
+      "eta_s": 779.0,
+      "v_lo": 9.8,
+      "v_hi": 18.7,
+      "safety": "yellow",
+      "doc_safety": "red",
+      "note": "上界越界；doc_safety 与 §5.3 规则表冲突"
+    },
+    {
+      "speed_kmh": 16.5,
+      "pace": "3:38",
+      "eta_naive_s": 655.0,
+      "eta_s": 661.0,
+      "v_lo": 12.3,
+      "v_hi": 21.3,
+      "safety": "red",
+      "doc_safety": "red",
+      "note": "上界越界严重；合法速度但 2σ 冲到 21+，高价值压测点"
+    },
+    {
+      "speed_kmh": 17.0,
+      "pace": "3:32",
+      "eta_naive_s": 642.0,
+      "eta_s": 647.0,
+      "v_lo": 12.8,
+      "v_hi": 21.9,
+      "safety": "red",
+      "doc_safety": "red",
+      "known_anomaly": true,
+      "note": "合法速度；2σ 上界 21.9"
+    }
+  ],
+  "known_anomalies": [
+    {
+      "speed_kmh": 17.0,
+      "columns": ["eta_naive_s", "eta_s"],
+      "observed": "文档把「纯运动」记为 10:42 (642 s)、「修正 ETA」记为 10:47 (647 s)",
+      "computed": "D/(v·ms) 给 10:35 (635.3 s)，数值积分给 10:42 (641.9 s)",
+      "evidence": [
+        "其余 10 行的两列都吻合到 ±2 s，只有这一行两列同时偏大 5–7 s。",
+        "647 s 恰好等于按 v_ceil=16.7 km/h 算出的纯运动时间 (646.7 s)，",
+        "所以一个可能解释是：该行在某个中间版本按「clamp 生效」的口径算过。",
+        "也可能只是笔误。无法从现有材料判定，故不改文档，只在此标注。"
+      ],
+      "action": "test_row 对这一行跳过 eta 列对照，另由 test_row_17_legal_but_very_noisy 单独锁定实现值。"
+    }
+  ],
+  "document_contradictions": [
+    {
+      "kind": "safety_color_definition",
+      "title": "§5.3 的规则表与 §5.4 的判定列对不上",
+      "affected_speeds_kmh": [9.0, 13.0, 14.0],
+      "rule_5_3": [
+        "🟢 = v_lo ≥ 6 且 v_hi ≤ 17（2σ 内绝不越界）",
+        "🟡 = 1σ 内安全、2σ 越界（临界，偶发误判）",
+        "🔴 = 其余（很可能被 App 误判）"
+      ],
+      "conflict": [
+        "§5.4 把这 3 行标为 🔴，但它们的 1σ 区间并未越界：",
+        "  9.0  的 1σ 下界 = 9.0×0.985 − 1.9552 = 6.92 > 6",
+        "  13.0 的 1σ 上界 = 13.0×1.05 + 1.9552 = 15.61 < 17",
+        "  14.0 的 1σ 上界 = 14.0×1.05 + 1.9552 = 16.66 < 17",
+        "按 §5.3 的规则表，它们应当是 🟡 而不是 🔴。"
+      ],
+      "resolution": [
+        "§5.3 是**规则定义**（条件 → 颜色），§5.4 是**示例表**。规则定义优先。",
+        "实现按 §5.3 判色；§5.4 的判定列以 doc_safety 字段原样保留，不篡改。",
+        "两种口径都指向同一个可操作结论：只有 [10.2, 12.4] 才是真正安全的。"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+# ════════════════════════════════════════════════════════════════
+#  VRun — conda 环境定义（环境名 vrun，Python 3.12）
+# ════════════════════════════════════════════════════════════════
+#
+#  创建 / 重建：
+#      /Users/yuanjun/miniconda3/bin/conda env create -f environment.yml
+#  或强制重建：
+#      /Users/yuanjun/miniconda3/bin/conda env remove -n vrun -y
+#      /Users/yuanjun/miniconda3/bin/conda env create -f environment.yml
+#
+#  ⚠️ 本文件**不列举 pip 包**，只引用 requirements.txt。
+#     pip 层的唯一权威是 requirements.txt（works.md §4.5）。
+#     在这里重复列举会造成两个文件漂移 —— 这是被刻意禁止的。
+#
+#  ⚠️ conda 不在非交互 shell 的 PATH 上，脚本里必须用全路径
+#     /Users/yuanjun/miniconda3/bin/conda，或 conda run -n vrun ...
+# ════════════════════════════════════════════════════════════════
+
+name: vrun
+
+channels:
+  - defaults
+
+dependencies:
+  - python=3.12
+  - pip
+
+  # ↓ 唯一的 pip 入口。不要在此处展开具体包名。
+  - pip:
+      - -r requirements.txt
