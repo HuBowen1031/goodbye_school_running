@@ -1,4 +1,21 @@
-
-# Cyrene agent
+# —— Cyrene agent 工作底稿（计划存档，不入库）——
 .cyrene/
+
+# —— macOS ——
 .DS_Store
+
+# —— Python ——
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+venv/
+.venv/
+
+# —— Swift 构建产物 ——
+.build/
+app/VRun/.build/
+
+# —— 运行产物：含校园坐标轨迹，属个人位置数据，不入库 ——
+logs/
+*.log

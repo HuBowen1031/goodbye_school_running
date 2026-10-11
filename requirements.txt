@@ -1,0 +1,26 @@
+# ════════════════════════════════════════════════════════════════
+#  VRun — Python 侧车依赖清单（pip 层唯一权威）
+# ════════════════════════════════════════════════════════════════
+#
+#  安装方式（conda 不在非交互 shell 的 PATH，必须用全路径调用）：
+#      /Users/yuanjun/miniconda3/bin/conda run -n vrun \
+#          pip install -r requirements.txt
+#
+#  environment.yml 的 pip 段必须写成 `-r requirements.txt`，
+#  不要在本文件之外重复列举 pip 包（否则两个文件必然漂移）。
+#
+#  分层约定见 docs/file-manifest.md §9：
+#      ① 纯计算层 → 只允许 numpy
+#      ② 设备层   → 只允许 pymobiledevice3
+# ════════════════════════════════════════════════════════════════
+
+# —— ② 设备层：DVT 位置模拟（iOS 17+ 需走隧道；DDI 自动下载，不需要 Xcode）——
+pymobiledevice3>=11.26.0
+
+# —— ① 纯计算层：AR(1) 噪声、数值积分 ETA、后验统计校验 ——
+# 使用纪律：只允许 np.random.default_rng(seed)，禁止 np.random.seed() 与全局 np.random.*
+# （PCG64 比特流有跨版本兼容承诺，这是「同种子 ⇒ 逐字节可复现」的技术前提）
+numpy>=1.26,<3
+
+# —— 测试：仅开发期需要，运行时不依赖 ——
+pytest>=8.0

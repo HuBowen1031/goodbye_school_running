@@ -1,6 +1,6 @@
 # VRun — iPhone 位置模拟器（校园跑步 App 测试工具）
 
-> 本文件批准后落地为项目根目录 `works.md`。
+> 本文件即项目根目录 `works.md`（2026-10-09 落地）。
 > 代码注释、文档、GUI 文案**一律中文**。
 > 目标读者：用户审阅 + 后续接手的 Agent。
 
@@ -11,6 +11,14 @@
 - ✅ §3.6 新增配速 / ETA 的闭式解（预览计算的规格基础）。
 - ✅ §4.2 协议新增 `estimate` / `estimate.result`。
 - ✅ M4 从「场景库与实测」收敛为「冒烟验证与实测记录」。
+
+**v3 修订（2026-10-11）**
+
+- ✅ §4.4 目录结构补全：新增 `requirements.txt`、`docs/file-manifest.md`、`probe/`，
+  以及 3 个被 M3 任务清单要求、但原目录树遗漏的 Swift 文件（`Models` / `SessionController` / `RouteModel`）。
+- ✅ **新增 §4.5「依赖策略」**：明确 `requirements.txt` 与 `environment.yml` 的分工，以及 numpy 的使用纪律。
+- ✅ 新增 **`docs/file-manifest.md`**：§4.4 的展开版，逐文件说明职责、接口与里程碑，供接手 Agent 使用。
+- ✅ §11 禁止项补充：纯计算层不得引入 numpy 之外的第三方库；不得使用全局随机状态。
 
 ---
 
@@ -27,6 +35,7 @@
 | `VRun.app` | macOS 原生 GUI（SwiftUI + MapKit）：画路线、**速度滑块面板**、控会话 |
 | `vrun` 侧车 | Python 3.12 服务：轨迹生成内核 + 参数估算 + iPhone 定位注入 |
 | `works.md` | 工程文档，另一个 Agent 可据此独立接手 |
+| `docs/file-manifest.md` | 逐文件职责清单（§4.4 的展开版） |
 | `docs/findings.md` | 实测记录 |
 
 **明确不在范围内**
@@ -329,8 +338,12 @@ Virtual_Location_Software_For_Apple/
 ├── works.md                    # 本计划（工程文档）
 ├── README.md                   # 从零上手
 ├── .gitignore
-├── environment.yml             # conda env: vrun，python=3.12
+├── LICENSE                      # MIT
+├── requirements.txt             # pip 依赖（唯一权威，见 §4.5）
+├── environment.yml              # conda env: vrun，python=3.12（pip 段引用 requirements.txt）
 ├── src/vrun/
+│   ├── __init__.py             # 包声明（不 import 设备层，保证 estimate 离线可用）
+│   ├── __main__.py             # python -m vrun 入口
 │   ├── geo.py                  # 经纬度 ↔ 局部 ENU 米制平面、haversine、方位角
 │   ├── route.py                # 路线模型 + 弧长参数化 + 按目标距离缩放
 │   ├── profile.py              # 速度剖面与预设档位（engine 与 estimate 共用）
@@ -350,20 +363,59 @@ Virtual_Location_Software_For_Apple/
 │   │   ├── SpeedPanel.swift         # ★ 速度滑块 + 配速/ETA 预览面板
 │   │   ├── PreviewMath.swift        # ★ 与 estimate.py 同构的即时近似
 │   │   ├── SafetyBand.swift         # ★ 噪声安全带色带绘制
+│   │   ├── Models.swift             # IPC 消息的 Codable 结构
+│   │   ├── SessionController.swift  # 会话状态机（含运行中滑块锁定）
+│   │   ├── RouteModel.swift         # 路线点集与编辑（与绘制解耦）
 │   │   └── SidecarClient.swift      # JSON Lines 通信
 │   └── bundle/Info.plist
 ├── tests/
+│   ├── conftest.py                  # 固定种子 / 假时钟 / 假 bridge
 │   ├── test_estimate.py             # ★ 配速 / ETA / 安全带
-│   ├── test_route.py / test_profile.py / test_noise.py / test_engine.py
+│   ├── test_geo.py / test_route.py / test_profile.py
+│   ├── test_noise.py / test_engine.py
 │   └── golden/estimate.json         # ★ 两侧共享的基准值（防公式漂移）
 ├── scripts/
 │   ├── bootstrap_env.sh        # 建 conda 环境（全路径调用 conda）
 │   ├── build_app.sh            # SwiftPM 构建 + 组装 .app
 │   ├── preflight.sh            # 设备前置检查
 │   └── panic-clear.sh          # 紧急清除模拟定位
-├── docs/                       # preflight.md / findings.md
+├── docs/                       # preflight.md / findings.md / file-manifest.md
+├── probe/                      # ProbeApp.swift（M0 探针，约 30 行）
 └── logs/                       # 运行记录（gitignore）
 ```
+
+> 逐文件的职责、接口与里程碑，见 **`docs/file-manifest.md`**（本节目录树的展开版）。
+
+### 4.5 依赖策略
+
+**两个依赖文件的分工**（必须这样分，否则必然漂移）
+
+```
+environment.yml            ← conda 层：python 版本、conda 包
+   └── pip:
+        └── -r requirements.txt    ← pip 层：唯一权威的 pip 依赖清单
+```
+
+| 文件 | 角色 |
+| --- | --- |
+| `requirements.txt` | **pip 依赖的唯一权威**。任何 Python 依赖只在这一处增删 |
+| `environment.yml` | **只引用它**，不重复列举 pip 包 |
+
+当前 `requirements.txt` 内容：
+
+| 依赖 | 用途 | 归属层 |
+| --- | --- | --- |
+| `pymobiledevice3>=11.26.0` | DVT 位置模拟（iOS 17+ 隧道） | ② 设备层 |
+| `numpy>=1.26,<3` | AR(1) 噪声、数值积分、统计校验 | ① 纯计算层 |
+| `pytest>=8.0` | 测试运行器 | 测试 |
+
+**numpy 的使用纪律**（不是洁癖，是验收标准的技术前提）
+
+1. 只允许 `np.random.default_rng(seed)`，**禁止** `np.random.seed()` 与全局 `np.random.*`。
+   全局随机状态会被任何第三方库的随机调用污染，「同种子 ⇒ 逐字节可复现」随之失效。
+2. numpy 对 PCG64 的比特流有**跨版本兼容承诺**，因此 golden values 在不同 numpy 版本上仍可复现。
+3. ① 纯计算层**只能**引入 numpy 这一个第三方库；再加一个就要重新讨论分层。
+4. 依赖只走 **conda + pip**，不引入 brew / uv / pipx（见 §11）。
 
 ---
 
@@ -522,7 +574,8 @@ Virtual_Location_Software_For_Apple/
 
 - [ ] 用 conda 创建独立环境：`/Users/yuanjun/miniconda3/bin/conda create -n vrun python=3.12 -y`
       （本地已缓存 3.12.13/3.12.14 包，预计无需联网）
-- [ ] 在 `vrun` 中安装 `pymobiledevice3>=11.26.0`，锁定版本写入 `environment.yml`
+- [ ] 用 `pip install -r requirements.txt` 安装依赖（`pymobiledevice3` / `numpy` / `pytest`）；
+      `environment.yml` 的 pip 段只写 `-r requirements.txt`，不重复列举（§4.5）
 - [ ] 记录 **conda 不在非交互 PATH** 的调用方式，写入 `scripts/*.sh` 头部
 - [ ] **Xcode 验证**（用户手动装组件后执行）：
       `sudo xcode-select -s /Applications/Xcode.app && sudo xcodebuild -runFirstLaunch`
@@ -550,7 +603,7 @@ Virtual_Location_Software_For_Apple/
 - [ ] `recorder.py`：CSV + GPX 落盘，便于离线审查
 - [ ] `cli.py`：`vrun simulate --route X.json --speed 10 --noise realistic --out logs/`
       以及 `vrun estimate --speed 10 --distance 3000`（**无设备也能跑**）
-- [ ] 单元测试：路线长度误差 < 0.5%、稳态速度误差 < 1%、clamp 生效、同种子输出逐字节一致、起步段不越界
+- [ ] 单元测试：投影往返误差 < 0.1 m、路线长度误差 < 0.5%、稳态速度误差 < 1%、clamp 生效、同种子输出逐字节一致、起步段不越界
 - [ ] **★ `tests/golden/estimate.json`**：§5.4 全表落为基准数据，`test_estimate.py` 逐行断言
 - [ ] 验收：离线跑 3 km，导出的 CSV 统计出**平均速度 ≈ 设定值 ±1%**、**总距离 ≈ 3000 m ±0.5%**、
       **实测 ETA 与 `estimate` 预测差 < 2 s**
@@ -698,7 +751,7 @@ Virtual_Location_Software_For_Apple/
 
 ## 11. 给接手 Agent 的须知
 
-**必读**：§1.2（技术事实）、§2.1（时间不可伪造）、§2.3（清理红线）、§3.5（表观速度抖动）、**§5（滑块面板规格）**
+**必读**：§1.2（技术事实）、§2.1（时间不可伪造）、§2.3（清理红线）、§3.5（表观速度抖动）、**§5（滑块面板规格）**、`docs/file-manifest.md`（逐文件职责）
 
 **禁止**
 
@@ -707,6 +760,9 @@ Virtual_Location_Software_For_Apple/
 - 不要试图"加快"仿真时间（物理上不可能，见 §2.1）
 - 不要引入 brew / uv / pipx（本机没有，且用户指定用 conda）
 - **不要绕过 `estimate.py` 另写一套 ETA 公式**（§4.3.5 / R-8）
+- **不要在 ① 纯计算层引入 numpy 之外的第三方库**（§4.5）
+- **不要使用全局随机状态**（`np.random.seed()` / `np.random.*`），必须用 `default_rng(seed)`（§4.5）
+- **不要把 §4.4 与 `docs/file-manifest.md` 改成两套说法**——它们是同一份事实的两处表述，改动必须同步
 
 **执行顺序**：M0 → M1 →（M2 → M3）→ M4 → M5。
 M1 完全不依赖手机，**可以先做**；§5 的面板逻辑在 M1 即可离线验证完；M0 的 Gate 决定是否值得继续做 M2 之后的部分。
