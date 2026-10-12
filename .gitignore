@@ -19,3 +19,6 @@ app/VRun/.build/
 # —— 运行产物：含校园坐标轨迹，属个人位置数据，不入库 ——
 logs/
 *.log
+
+# —— 探针 App 构建产物 ——
+probe/build/
