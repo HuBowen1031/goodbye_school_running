@@ -191,6 +191,23 @@ class TrackEngine:
             completed=s >= total - 1e-6,
         )
 
+    # ── 生命周期 ──────────────────────────────────────────────
+
+    def reset(self) -> None:
+        """把两条随机流（位置噪声、速度抖动 η）回到起点。
+
+        调用时机
+            **开新会话**时调一次（对应 M2 的 ``run.prepare``）；
+            会话**进行中**不要调 —— 暂停 / 恢复必须保留已经走过的噪声状态。
+
+        为什么由调用方决定
+            :meth:`run` 刻意**不**自动重置。若它自动重置，
+            「跨多次 :meth:`run` 拼一段连续轨迹」就会被悄悄切断；
+            而「开新会话」是另一个语义。这两者不该由引擎替调用方猜。
+        """
+        self.noise.reset()
+        self.jitter.reset()
+
     # ── 离线仿真 ──────────────────────────────────────────────
 
     def simulate_offline(self) -> list[Sample]:
@@ -208,9 +225,8 @@ class TrackEngine:
             return value
 
         out: list[Sample] = []
-        # 保证「同种子 ⇒ 同轨迹」，与这个对象是否已经跑过第二次无关
-        self.noise.reset()
-        self.jitter.reset()
+        # 保证「同种子 ⇒ 同轨迹」，与这个对象之前跑过几次无关
+        self.reset()
         self.run(
             out.append,
             clock=fake_clock,

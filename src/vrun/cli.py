@@ -126,22 +126,41 @@ def _cmd_golden(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_simulate(args: argparse.Namespace) -> int:
-    # 延迟导入：引擎依赖 numpy，但路径很短，放在函数内也无碍可读性
-    from .engine import TrackEngine
-    from .noise import GPSNoise
+def _resolve_route(args: argparse.Namespace):
+    """按参数解析出路线，返回 ``(route, 提示信息或 None)``。
+
+    ⚠️ ``--distance`` 的默认值是 None 而不是 3000。这个区别很重要：
+    缺省语义必须是「**保持路线原长**」。若默认值取 3000，
+    ``simulate --route X.json`` 会把用户画好的路线**无声地**缩放掉 ——
+    用户没要求，却已经发生了，且界面上看不出任何提示。
+    """
     from .route import Route
 
     if args.route:
         route = Route.from_json(args.route)
-        if args.distance and abs(route.length() - args.distance) > 1.0:
+        original_m = route.length()
+        if args.distance is not None and abs(original_m - args.distance) > 1.0:
             route = route.scaled_to(args.distance)
-    else:
-        route = _synthetic_route(args.distance)
+            return route, f"路线缩放    {original_m:.1f} m → {route.length():.1f} m（由 --distance 指定）"
+        return route, None
+    return _synthetic_route(D_MIN_M if args.distance is None else args.distance), None
+
+
+def _build_engine(args, route):
+    """按参数装配好引擎（纯计算，不碰设备）。"""
+    from .engine import TrackEngine
+    from .noise import GPSNoise
 
     profile = SpeedProfile(v_bar=args.speed)
     noise = GPSNoise(level=args.noise, sample_rate=args.rate, seed=args.seed)
-    engine = TrackEngine(route, profile, noise, sample_rate=args.rate)
+    return TrackEngine(route, profile, noise, sample_rate=args.rate)
+
+
+def _cmd_simulate(args: argparse.Namespace) -> int:
+    route, note = _resolve_route(args)
+    if note:
+        print(note)
+    engine = _build_engine(args, route)
 
     print(f"路线长度    {route.length():.1f} m（{len(route)} 个顶点）")
     print(f"速度        {args.speed} km/h    噪声 {args.noise}    种子 {args.seed}")
@@ -166,6 +185,48 @@ def _cmd_simulate(args: argparse.Namespace) -> int:
     if args.csv:
         _write_csv(samples, args.csv)
         print(f"已写出 {args.csv}")
+    return 0
+
+
+def _cmd_gpx(args: argparse.Namespace) -> int:
+    """导出可回放的 GPX —— 它同时是「存档」和「真机注入的输入」。
+
+    ``pymobiledevice3 developer dvt simulate-location play`` 会按每个点的
+    ``<time>`` 差值 sleep 再循环 ``set()``，所以一份带时间戳的 GPX
+    就是一条能直接打到真机上的轨迹。
+    """
+    from .recorder import summarize, write_csv, write_gpx
+
+    route, note = _resolve_route(args)
+    if note:
+        print(note)
+    engine = _build_engine(args, route)
+    samples = engine.simulate_offline()
+    if not samples:
+        print("没有产出任何采样点", file=sys.stderr)
+        return 1
+
+    path = write_gpx(samples, args.out, name=f"VRun {args.speed:g}km/h")
+    stats = summarize(samples)
+
+    print(f"路线长度    {route.length():.1f} m（{len(route)} 个顶点）")
+    print(f"采样点数    {stats['samples']}")
+    print(f"总时长      {stats['duration_s']:.1f} s")
+    print(f"总距离      {stats['distance_m']:.1f} m")
+    print(f"平均速度    {stats['mean_speed_kmh']:.3f} km/h")
+    print(f"表观速度    {stats['apparent_speed_min_kmh']:.2f} – "
+          f"{stats['apparent_speed_max_kmh']:.2f} km/h"
+          f"（1σ = {stats['apparent_speed_sigma_kmh']:.2f}）")
+    print()
+    print(f"已写出 GPX  {args.out}")
+
+    if args.csv:
+        write_csv(samples, args.csv)
+        print(f"已写出 CSV  {args.csv}")
+
+    print()
+    print("回放到真机：")
+    print(f'  "$PY" -m pymobiledevice3 developer dvt simulate-location play -- {args.out}')
     return 0
 
 
@@ -251,6 +312,23 @@ def _write_csv(samples, path: str) -> None:
 #  main
 # ══════════════════════════════════════════════════════════════
 
+def _cmd_serve(args: argparse.Namespace) -> int:  # noqa: ARG001
+    """启动侧车：JSON Lines 走 stdin/stdout。
+
+    这是 **GUI 唯一会调用的子命令**。管道一断（GUI 退出或崩溃），
+    ``readline()`` 立刻返回 EOF，服务循环随即退出 —— 生命周期天然绑定，
+    不留孤儿进程（works.md §4.2）。
+    """
+    import asyncio
+
+    from .ipc import serve
+
+    # 提示写到 **stderr**：stdout 是协议通道，写进去会污染 GUI 的解析。
+    print("VRun 侧车已启动，监听 stdin…（当前仅 estimate / device.status 可用）",
+          file=sys.stderr)
+    return asyncio.run(serve())
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vrun",
@@ -280,7 +358,10 @@ def build_parser() -> argparse.ArgumentParser:
     # ── simulate ──
     p_sim = sub.add_parser("simulate", help="离线跑完整轨迹（假时钟，秒级完成）")
     p_sim.add_argument("--speed", type=float, default=10.0)
-    p_sim.add_argument("--distance", type=float, default=D_MIN_M)
+    p_sim.add_argument(
+        "--distance", type=float, default=None,
+        help="目标距离 米。缺省时：给了 --route 就保持路线原长，没给则用 3000",
+    )
     p_sim.add_argument("--noise", choices=sorted(("off", "realistic", "harsh")),
                        default="realistic")
     p_sim.add_argument("--rate", type=float, default=1.0)
@@ -288,6 +369,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_sim.add_argument("--route", default=None, help="路线 JSON 路径（缺省用合成方形环）")
     p_sim.add_argument("--csv", default=None, help="把采样点写成 CSV")
     p_sim.set_defaults(func=_cmd_simulate)
+
+    # ── gpx（可回放到真机）──
+    p_gpx = sub.add_parser(
+        "gpx", help="导出带时间戳的 GPX —— 可被 simulate-location play 直接回放")
+    p_gpx.add_argument("--speed", type=float, default=10.0)
+    p_gpx.add_argument("--distance", type=float, default=None,
+                       help="目标距离 米。缺省时：给了 --route 就保持路线原长，没给则用 3000")
+    p_gpx.add_argument("--noise", choices=sorted(("off", "realistic", "harsh")),
+                       default="realistic")
+    p_gpx.add_argument("--rate", type=float, default=1.0)
+    p_gpx.add_argument("--seed", type=int, default=0)
+    p_gpx.add_argument("--route", default=None, help="路线 JSON 路径（缺省用合成方形环）")
+    p_gpx.add_argument("--out", default="logs/route.gpx", help="GPX 输出路径")
+    p_gpx.add_argument("--csv", default=None, help="顺便写一份 CSV")
+    p_gpx.set_defaults(func=_cmd_gpx)
+
+    # ── serve（侧车入口，GUI 唯一会调的子命令）──
+    p_serve = sub.add_parser(
+        "serve", help="启动侧车：JSON Lines 走 stdin/stdout（GUI 用）")
+    p_serve.set_defaults(func=_cmd_serve)
 
     # ── 设备相关（M2）──
     p_dev = sub.add_parser("device-status", help="[M2] 查看设备与隧道状态")

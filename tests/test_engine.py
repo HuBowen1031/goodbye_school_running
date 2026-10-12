@@ -228,3 +228,56 @@ class TestValidation:
             return value
 
         return clock
+
+
+# ══════════════════════════════════════════════════════════════
+#  生命周期：reset 与 run 的语义分工
+# ══════════════════════════════════════════════════════════════
+
+def _coords(samples: list[Sample]) -> list[tuple[float, float]]:
+    return [(s.lat, s.lon) for s in samples]
+
+
+def _raw_run(engine: TrackEngine) -> list[Sample]:
+    """直接驱动 ``run()``，**不**经过 reset —— 用来观察状态是否被延续。"""
+    period = 1.0 / engine.sample_rate
+    state = [0.0]
+
+    def clock() -> float:
+        value = state[0]
+        state[0] += period
+        return value
+
+    out: list[Sample] = []
+    engine.run(out.append, clock=clock, sleeper=lambda _s: None)
+    return out
+
+
+class TestResetSemantics:
+    """``reset()`` 与 ``run()`` 的职责边界。
+
+    契约：**「开新会话」重置，「会话内」延续。**
+    由调用方决定何时重置 —— 引擎不替它猜。
+    """
+
+    def test_reset_restores_reproducibility(self, route_3km) -> None:
+        engine = _engine(route_3km)
+        first = engine.simulate_offline()
+        engine.reset()
+        assert _coords(_raw_run(engine)) == _coords(first)
+
+    def test_run_does_not_reset_implicitly(self, route_3km) -> None:
+        """不调 reset 就再跑一次，轨迹**必须不同**。
+
+        这是「暂停 / 恢复要保留噪声状态」那条语义的护栏：
+        若引擎偷偷重置，跨两次 run 拼出的轨迹会被切断。
+        """
+        engine = _engine(route_3km)
+        first = engine.simulate_offline()
+        without_reset = _raw_run(engine)
+        assert _coords(without_reset) != _coords(first)
+
+    def test_simulate_offline_is_self_contained(self, route_3km) -> None:
+        """``simulate_offline()`` 自带 reset，重复调用结果一致。"""
+        engine = _engine(route_3km)
+        assert _coords(engine.simulate_offline()) == _coords(engine.simulate_offline())
