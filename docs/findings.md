@@ -242,6 +242,110 @@ resolve_python: 找不到环境 'vrun-nope-xyz' 的 Python 解释器。   # exit
 
 ---
 
+## F8 ★ `simulate-location set` CLI **永久阻塞** —— 逐点注入在 CLI 层面不可能
+
+**涉及**：works.md §4.1「为什么不用 CLI 子进程逐点注入」
+
+works.md 给出的理由是：
+
+> CLI 每次启动开销 300–800 ms，1 Hz 都稳不住。必须用**常驻进程的 Python API**。
+
+**实测（2026-10-12，生死验证 1）发现真实原因比这强得多。** 读 `cli/developer/dvt/simulate_location.py`：
+
+```python
+@cli.command("set")
+@async_command
+async def dvt_simulate_location_set(service_provider, latitude, longitude) -> None:
+    async with DvtProvider(service_provider) as dvt, LocationSimulation(dvt) as location_simulation:
+        await location_simulation.set(latitude, longitude)
+        OSUTILS.wait_return()        # ← 设完就永久阻塞，等 Ctrl-C
+```
+
+而 `clear` **没有**这一行：
+
+```python
+@cli.command("clear")
+@async_command
+async def dvt_simulate_location_clear(service_provider) -> None:
+    async with DvtProvider(service_provider) as dvt, LocationSimulation(dvt) as location_simulation:
+        await location_simulation.clear()      # ← 设完就退出
+```
+
+**后果**：
+
+1. `set` 不是「设完就走」的命令，而是一条**必须常驻**的命令 ——
+   它要靠 `async with` 保持 DVT 连接存活，进程一退出上下文就析构。
+2. 因此 **CLI 层面根本不存在「循环注入」的形态**。
+   works.md 说的「启动开销 300–800 ms」是**次要**理由；
+   就算开销是 0，这条命令也用不了 —— 它一次只能设一个点然后就卡住了。
+3. 实测印证：`set` 发出后一直不返回，120 s 后被 harness SIGTERM（`Terminated: 15`）；
+   `clear` 则立即返回、无输出。
+
+**结论不变，理由要换**：
+
+> ✅ 「必须用常驻进程的 Python API」—— **works.md 的决策是对的**
+> ⚠️ 但支撑它的理由不完整。若按原理由去质疑这个决策
+> （"优化一下启动开销不就行了？"），会得出错误结论。
+> **真实理由是结构性的：CLI 没有循环形态。**
+
+**处置**：
+
+- M2 的 `DeviceBridge` 必须是**常驻进程**（works.md §4.2 已是此设计，此条只是补上硬证据）；
+- 逐点注入循环要自己写，仿照 `LocationSimulation.play_gpx_file()` 的思路
+  （works.md §1.2 已指出该函数「本质是按时间戳 sleep 后循环 set()」）；
+- `clear` 可以安全地用作**独立的一次性进程**，因为它不阻塞 ——
+  这是 `scripts/panic-clear.sh` 的技术前提。
+
+> 附带确认 works.md §1.2 的另一条：`LocationSimulation` 只有
+> `set(latitude, longitude)` 与 `clear()` 两个方法，
+> **确实没有** speed / course / altitude / timestamp。§2.1「时间不可伪造」的前提再次坐实。
+
+---
+
+## F9 ★ 存在一条比 `device.py` 更省的注入路径（但不完整）
+
+**涉及**：works.md §4.2「M2 设备桥」的设计取舍
+
+works.md 规划 M2 写 `device.py` 封装 `LocationSimulation`，
+在**常驻进程**里自己写循环逐点 `set()`。
+
+**2026-10-12 实测发现**：这个循环**不用写** —— 上游已经提供了：
+
+```bash
+vrun gpx --route X.json --speed 10 --out logs/run.gpx     # ① M1 离线算轨迹
+pymobiledevice3 developer dvt simulate-location play -- logs/run.gpx   # ② 回放到真机
+```
+
+`play_gpx_file()` 内部就是「按 `<time>` 差值 sleep → 循环 `set()`」，
+一份带时间戳的 GPX 就是一条完整轨迹。**实测 166 m / 66 s / 9–10 km/h 一次跑通，
+校园 App 计数正确、零告警。**
+
+### 为什么这条路径值得单独记
+
+| | `play` 回放（现成） | 自写 `device.py` |
+| --- | --- | --- |
+| 隧道 / DVT 连接管理 | **上游包了** | 自己写（lockdown → RemotePairing → tunnel → RSD） |
+| 轨迹一致性 | **离线算的与注入的逐字节一致** | 实时算，时钟抖动会进入轨迹 |
+| 中途改速度（§5 滑块） | ❌ **做不到** | ✅ |
+| 暂停 / 恢复 | 杀进程 + clear + 从当前位置重生成 | ✅ |
+| 实时遥测回 GUI | ❌（但轨迹是我们自己算的，本就知道） | ✅ |
+
+### 结论：**两条都要，但不是替代关系**
+
+- **`play` 覆盖「跑一次完整会话」** —— S2 冒烟检查（works.md §7.2）用它就够了，
+  而且零维护成本。M4 的验收可以现在就做，不必等 M2 写完。
+- **自写 `device.py` 只为一件事：§5 的速度滑块** —— 「跑到一半改速度」
+  在 `play` 模型下不存在，因为轨迹已经是固定文件了。
+
+> ⚠️ 换句话说：**M2 的必要性从「能注入」降级为「能中途改参数」**。
+> 这不改变里程碑顺序，但显著改变了 M2 的**风险等级** ——
+> 它不再是「不做就什么都做不了」，而是「不做就只有静态轨迹」。
+
+> 附：`play` 回放完同样落在 `OSUTILS.wait_return()` 上永久阻塞（F8 同样适用于 `play`），
+> 所以进程回收仍是必需的。三保险（works.md §2.3）对它一视同仁。
+
+---
+
 ## 汇总
 
 | 编号 | 类型 | 影响 | 处置 |
@@ -253,3 +357,5 @@ resolve_python: 找不到环境 'vrun-nope-xyz' 的 Python 解释器。   # exit
 | F5 | 统计估计量偏差 | σ 被低估最多 15% | 多种子 + 解析修正 |
 | F6 | 实现遗漏 | η(t) 恒为 0 | 补实现，独立随机流 |
 | F7 | **路径错误** | 侧车启动会失败 | ✅ 已修：`resolve_python.sh` 解析 prefix + 回归测试 |
+| F8 | **文档理由不完整** | 「必须常驻进程」的真实理由被低估 | 决策不变，理由换成结构性的：CLI 无循环形态 |
+| F9 | **架构取舍** | M2 的必要性被高估 | `play` 回放可覆盖完整会话；`device.py` 只为「中途改参数」 |

@@ -20,6 +20,34 @@
 - ✅ 新增 **`docs/file-manifest.md`**：§4.4 的展开版，逐文件说明职责、接口与里程碑，供接手 Agent 使用。
 - ✅ §11 禁止项补充：纯计算层不得引入 numpy 之外的第三方库；不得使用全局随机状态。
 
+**v4 修订（2026-10-12）—— 代码审查后与实现对齐**
+
+- ✅ §1.3 环境实测表更新：`vrun` 环境实际在 **`~/.conda/envs/vrun`**（Python **3.12.15**），
+      `pymobiledevice3` 已装 **11.27.2**；工作区已是 Git 仓库且 M1 已落地。
+- ✅ §6 M0 / M1 勾选状态**回归真实**：M1 的 10 项已完成并实测通过验收，
+      `recorder.py` / `ipc.py` 两项**如实保持未勾**。
+- ✅ §11 环境备忘区分「conda 安装位（可写死）」与「解释器路径（一律解析）」。
+
+> **v4 只做「文档追上代码」，不引入任何新需求。**
+> 变更明细见 `docs/file-manifest.md` §12 与本轮提交。
+
+**v5 修订（2026-10-12）—— M0 设备接入实测后**
+
+- ✅ §6 M0：设备型号 / iOS 版本、DDI（cryptex 27.1.266.1 已位）、`docs/preflight.md` 打勾；
+      生死验证 1 **部分完成**（注入与清理已执行，**目视确认待用户补**）。
+- ✅ §4.1「为什么不用 CLI 逐点注入」：**理由更正**（见 findings.md **F8**）。
+      真实原因是 `set` 会永久阻塞、CLI **没有循环形态**，而非启动开销。
+- ✅ 新增 `docs/preflight.md`：M0 每一步的实测命令与真实输出。
+
+> **Gate 状态：🟢 通过**（2026-10-12 20:35）。
+> `isSimulatedBySoftware` 确实为 `true`，但**校园 App 不检测它** ——
+> 166 m @ 9–10 km/h 的连续运动实测计数正确、零告警。
+> **works.md §6 M0 全部完成，M2 / M3 可以开工。**
+>
+> ⚠️ 本轮新增 **F9**：存在一条比 `device.py` 更省的注入路径 ——
+> `vrun gpx` 离线算轨迹 + `simulate-location play` 回放，已实测跑通完整会话。
+> M2 的必要性因此从「能注入」降级为「能中途改参数（§5 滑块）」。
+
 ---
 
 ## 0. 目标
@@ -75,7 +103,7 @@
 | iOS 17+ 必须走隧道；macOS 上默认自动建立 in-process userspace 隧道，**无需 root** | 官方 installation 文档 | 高 |
 | DDI 由 `mounter auto-mount` / `cryptex auto-install` 自动下载缓存到 `~/.pymobiledevice3`，**不需要 Xcode** | 官方 cli-recipes 文档 | 高 |
 | iOS 26.4+ 的 DDI 以 cryptex 形式安装 | 官方文档 + issue #1991 | 高 |
-| 最新版 `11.26.0`，`requires_python >= 3.9` | PyPI | 高 |
+| `>=11.26.0`，`requires_python >= 3.9`；本机实测装的是 **11.27.2** | PyPI + 本机 `pip list` | 高 |
 | 注入不携带 course / speed，轨迹是**离散点跳变** | 维护者说明（issue #340） | 中 |
 | `clear` 后个别人反馈定位短时间内不准 | issue #572 评论 | 低（个例） |
 
@@ -86,14 +114,15 @@
 | macOS | 27.0.1 (26A434)，arm64 | — |
 | conda | `/Users/yuanjun/miniconda3`，conda 26.1.0；base 为 Python 3.13.11 | 建环境用全路径调用 |
 | **conda 不在非交互 shell 的 PATH** | `command -v conda` 为空 | ⚠️ 脚本必须写 `/Users/yuanjun/miniconda3/bin/conda` 或 `conda run` |
-| Python 3.12 包 | **已缓存在本地** `~/miniconda3/pkgs/python-3.12.13`、`3.12.14` | 建环境**可能无需联网** |
+| Python 3.12 包 | 本机 `vrun` 环境实测为 **3.12.15** | 建环境无需联网 |
 | 现有 env | NetworkProjects / USMDecrypt / azureTest / dataAnalyst / qwen3-asr 均为 3.12.x | 不共用，新建独立 env |
 | Xcode | `/Applications/Xcode.app` **存在**，但 `xcode-select -p` 指向 `/Library/Developer/CommandLineTools`；`xcodebuild` 报 "requires Xcode" | ⚠️ 需切开发者目录 + 装组件 |
 | CLT SDK | 已含 `MacOSX27.0.sdk` / `MacOSX27.sdk` | 兜底：CLT 就能编 SwiftUI + MapKit |
 | Swift | 6.4，target `arm64-apple-macosx27.0.0` | 可用 |
 | brew / uv / pipx | **全部缺失** | 不引入；只用 conda + 系统 git |
-| pymobiledevice3 | 未安装 | M0 装 |
-| 工作区 | 根目录仅 `.cyrene/`、`.gitignore`、`.DS_Store`；`.cyrene/docs/plan-*.md` 为计划文件；非 Git 仓库 | 干净起点 |
+| pymobiledevice3 | ✅ 已装 11.27.2 | M2 使用 |
+| **vrun 环境位置** | **`~/.conda/envs/vrun`**（不是 `miniconda3/envs/`） | ⚠️ 一律用 `scripts/resolve_python.sh` 解析，见 F7 |
+| 工作区 | 已是 Git 仓库；M1 纯计算层已落地（`src/vrun/` 8 个文件 + `tests/` 10 个文件，209 测试全绿） | — |
 
 ---
 
@@ -291,7 +320,12 @@ flowchart TB
 
 **为什么用 stdio 管道而不是 UNIX socket**：GUI 用 `Process` 启动侧车，JSON Lines 走 stdin/stdout。少一个 socket 文件、少一层权限问题、生命周期天然绑定（GUI 退出 → 管道断开 → 侧车感知 → 自动清理）。
 
-**为什么不用 CLI 子进程逐点注入**：CLI 每次启动开销 300–800 ms，1 Hz 都稳不住。必须用**常驻进程的 Python API**。
+**为什么不用 CLI 子进程逐点注入**：**因为 CLI 根本没有循环注入的形态。**
+实测确认（findings.md **F8**，2026-10-12）：`simulate-location set` 在设完坐标后会调用
+`OSUTILS.wait_return()` **永久阻塞**，它必须靠 `async with` 保持 DVT 连接存活。
+所以它一次只能设一个点然后就卡住了 —— 这跟启动开销无关。
+（本文早期版本写的是「启动开销 300–800 ms，1 Hz 都稳不住」，那是**次要**理由；
+即使开销是 0，这条命令也用不了。）必须用**常驻进程的 Python API**。
 
 ### 4.2 通信协议（JSON Lines，一行一条）
 
@@ -574,44 +608,67 @@ environment.yml            ← conda 层：python 版本、conda 包
 
 ### M0 · 环境与「生死验证」（决定后续一切）
 
-- [ ] 用 conda 创建独立环境：`/Users/yuanjun/miniconda3/bin/conda create -n vrun python=3.12 -y`
-      （本地已缓存 3.12.13/3.12.14 包，预计无需联网）
-- [ ] 用 `pip install -r requirements.txt` 安装依赖（`pymobiledevice3` / `numpy` / `pytest`）；
+- [x] 用 conda 创建独立环境 `vrun`（python=3.12）
+      ——⚠️ 实际落在 **`~/.conda/envs/vrun`**，不是 `miniconda3/envs/`，见 F7
+- [x] 用 `pip install -r requirements.txt` 安装依赖（`pymobiledevice3` 11.27.2 / `numpy` 2.5.4 / `pytest` 9.1.1）；
       `environment.yml` 的 pip 段只写 `-r requirements.txt`，不重复列举（§4.5）
-- [ ] 记录 **conda 不在非交互 PATH** 的调用方式，写入 `scripts/*.sh` 头部
+- [x] 记录 **conda 不在非交互 PATH** 的调用方式，写入 `scripts/*.sh` 头部
 - [x] **解释器路径一律解析、绝不硬编码**：`scripts/resolve_python.sh`
       （F7：本机环境在 `~/.conda/envs/vrun`，写死会直接让侧车启动失败；
       回归护栏 `tests/test_env_resolution.py`）
-- [ ] **Xcode 验证**（用户手动装组件后执行）：
-      `sudo xcode-select -s /Applications/Xcode.app && sudo xcodebuild -runFirstLaunch`
-      然后确认 `xcode-select -p` 指向 Xcode.app、`xcodebuild -version` 输出正常
-      （兜底：若组件始终装不上，CLT 的 `MacOSX27.0.sdk` 已足够构建 SwiftUI + MapKit）
-- [ ] 设备前置：iPhone 用 USB 连接 → 信任此电脑 → 设置 › 隐私与安全性 › **开发者模式** 开启
-- [ ] 挂载 DDI：`pymobiledevice3 mounter auto-mount`（或 iOS ≥ 26.4 用 `cryptex auto-install`），确认缓存落到 `~/.pymobiledevice3`
-- [ ] **生死验证 1**：`pymobiledevice3 developer dvt simulate-location set -- <江安校区任取一点>` → 观察 iPhone 地图是否移动 → `clear` 确认恢复
-- [ ] **生死验证 2（唯一可能致命的未知）**：确认注入的位置是否被 `CLLocationSourceInformation.isSimulatedBySoftware` 标记为软件模拟。
+- [x] **Xcode 验证**：**免 sudo 即可** —— `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`
+      （2026-10-12 实测：Xcode 27.0 / iPhoneOS27.0.sdk，与设备 iOS 27.0.1 匹配；
+      **探针已编译通过 `** BUILD SUCCEEDED **`**）
+      ⚠️ **works.md 原计划要求 `sudo xcode-select -s`，实测不必要**，且理由见 `docs/preflight.md` §5：
+      **CLT 里只有 macOS SDK、根本没有 iOS SDK** —— 所以「CLT 兜底」对 M3 的 macOS GUI 成立，
+      对本探针（iOS App）**不成立**
+- [x] 设备前置：iPhone 用 USB 连接 → 信任此电脑 → 设置 › 隐私与安全性 › **开发者模式** 开启
+      —— ✅ USB 已配对；开发者模式**间接验证通过**（DVT 隧道能建立即说明已开启）
+- [x] 挂载 DDI：本机 `cryptex list` 显示 `com.apple.MobileAsset.DDI 27.1.266.1` **已在位**，
+      无需下载、**不需要 Xcode**（iOS 27.0.1 ≥ 26.4 ⇒ cryptex 形式，与 §1.2 预期一致）
+- [x] **生死验证 1**：注入 **北京天安门** → **用户目视确认地图确实跳过去** → `clear` 恢复
+      —— 2026-10-12 **通过**（详见 `docs/preflight.md` §3）
+      ✅ 注入生效 · ✅ 定位恢复 · ✅ 清理幂等（实测 4 次）· ✅ 无残留进程
+      ⚠️ 附带发现 F8：`set` 会**永久阻塞**（`OSUTILS.wait_return()`），不能用于循环注入
+      ⚠️ 方法论：注入点**必须选用户当前不在的地方**，否则无法区分"生效"与"没发生"
+- [x] **生死验证 2（唯一可能致命的未知）**：确认注入的位置是否被 `CLLocationSourceInformation.isSimulatedBySoftware` 标记为软件模拟。
+      —— 2026-10-12 **Gate 通过 🟢**，两个条件全部有结论：
+      | 条件 | 结论 |
+      | --- | --- |
+      | ① 注入被标记为「软件模拟」 | ✅ **确实如此**（`false → true`，R-1 从「可能」变「确实」） |
+      | ② 校园 App 检测该字段 | ❌ **不检测**（166 m @ 9–10 km/h 连续运动，计数正确、零告警） |
+      ⇒ **方案路线成立，M2 / M3 可以开工。**
+      ⚠️ 附带限制：DVT 接口无法指定海拔与精度，注入点的 `altitude` 恒为 0.00、
+      `horizontalAccuracy` 恒为 5.0 —— **造不出"像真的"海拔与精度**。
+      详见 `docs/preflight.md` §4
       方式：用 Xcode 自建一个约 30 行的 **iOS 探针 App**，只显示 `lat / lon / speed / timestamp / isSimulatedBySoftware`（免费 Apple ID 侧载即可，7 天有效期）。
       这一步**同时解决了"我们怎么确认注入真的生效"这个验证难题**——不需要碰校园 App 一根手指头。
-- [ ] 记录 iPhone 型号 / iOS 版本（决定隧道策略与 DDI 形式）
-- [ ] 产出 `docs/preflight.md`：每一步的实测命令与真实输出
+- [x] 记录 iPhone 型号 / iOS 版本：**iPhone18,1 / iOS 27.0.1（Build 24A446），USB 已配对**
+      ⇒ DDI 走 **cryptex** 形式（实测 27.1.266.1），隧道走**免 root 的 userspace 回落**
+- [x] 产出 `docs/preflight.md`：每一步的实测命令与真实输出
 
 > ⚠️ **Gate**：若确认被标记为软件模拟，且校园 App 会检测该字段，则整个方案的路线选择无效，需在此之前停下来重新讨论。
 
 ### M1 · 轨迹内核与估算（**完全不需要 iPhone**，可离线开发与测试）
 
-- [ ] `geo.py`：局部 ENU 等距圆柱投影（江安校区尺度误差 < 0.1%）、haversine 距离、方位角
-- [ ] `route.py`：折线路线模型、弧长参数化 `point_at(s)`、总长度、按目标距离自动缩放、JSON 读写
-- [ ] `profile.py`：§3.2 的速度剖面 + §3.3 预设档位 + clamp（**engine 与 estimate 共用，单一实现**）
-- [ ] `noise.py`：§3.4 双层 AR(1) + 跳点，种子可复现
-- [ ] `engine.py`：真实时钟积分，按 `Δt` 采样输出 `(t, lat, lon, s, v)`
-- [ ] **★ `estimate.py`**：§3.6 闭式解 + §5.3 安全带 + §5.4 golden values 全表比对；与 `profile.py` 共用实现
-- [ ] `recorder.py`：CSV + GPX 落盘，便于离线审查
-- [ ] `cli.py`：`vrun simulate --route X.json --speed 10 --noise realistic --out logs/`
-      以及 `vrun estimate --speed 10 --distance 3000`（**无设备也能跑**）
-- [ ] 单元测试：投影往返误差 < 0.1 m、路线长度误差 < 0.5%、稳态速度误差 < 1%、clamp 生效、同种子输出逐字节一致、起步段不越界
-- [ ] **★ `tests/golden/estimate.json`**：§5.4 全表落为基准数据，`test_estimate.py` 逐行断言
-- [ ] 验收：离线跑 3 km，导出的 CSV 统计出**平均速度 ≈ 设定值 ±1%**、**总距离 ≈ 3000 m ±0.5%**、
-      **实测 ETA 与 `estimate` 预测差 < 2 s**
+- [x] `geo.py`：局部 ENU 等距圆柱投影（江安校区尺度误差 < 0.1%）、haversine 距离、方位角
+- [x] `route.py`：折线路线模型、弧长参数化 `point_at(s)`、总长度、按目标距离自动缩放、JSON 读写
+- [x] `profile.py`：§3.2 的速度剖面 + §3.3 预设档位 + clamp（**engine 与 estimate 共用，单一实现**）
+- [x] `noise.py`：§3.4 双层 AR(1) + 跳点，种子可复现
+- [x] `engine.py`：真实时钟积分，按 `Δt` 采样输出 `(t, lat, lon, s, v)`；`clock` / `sleeper` 可注入
+- [x] **★ `estimate.py`**：§3.6 闭式解 + §5.3 安全带 + §5.4 golden values 全表比对；与 `profile.py` 共用实现
+- [x] `recorder.py`：CSV + GPX 落盘 + `summarize()` 统计（2026-10-12 补齐）
+      —— GPX 不只是存档：`simulate-location play` 会读它并按 `<time>` 差值回放，
+      于是「离线算的轨迹」与「真机注入的轨迹」**逐字节一致**。见 findings.md **F9**
+- [ ] `ipc.py`：JSON Lines 协议 —— **待建**（GUI 唯一会调的 `vrun serve` 依赖它）
+- [x] `cli.py`：`vrun estimate` / `golden` / `simulate`（**无设备也能跑**）
+- [x] 单元测试：投影往返误差 < 0.1 m、路线长度误差 < 0.5%、稳态速度误差 < 1%、clamp 生效、同种子输出逐字节一致、起步段不越界
+- [x] **★ `tests/golden/estimate.json`**：§5.4 全表落为基准数据，`test_estimate.py` 逐行断言
+- [x] 验收：**已实测通过**（2026-10-12）
+      - 平均速度 **9.926 km/h**（目标 10.0，误差 0.74%，要求 < 1%）
+      - 总距离 **3000.0 m**（要求 ±0.5%）
+      - 实测 ETA **1088.0 s** vs `estimate` 预测 **1089.15 s**，差 **1.15 s**（要求 < 2 s）
+      - 同种子两次输出逐字节一致
 
 > 这一阶段可以在手机不在场时全部完成，是风险最低、价值最高的部分。**§5 的面板逻辑在这里就能全部离线验证完**（因为 `vrun estimate` 不需要设备）。
 
@@ -651,6 +708,10 @@ environment.yml            ← conda 层：python 版本、conda 包
 
 ### M5 · 打包与文档
 
+- [x] `build_app.sh` 前的构建约定：**derived data 必须放在 `~/Documents` 之外**
+      （本项目位于 FileProvider 同步目录，iCloud 会反复注入 `com.apple.FinderInfo`，
+      导致 `codesign` 报 `resource fork, Finder information, or similar detritus not allowed`。
+      治标是 `xattr -cr`，会被再次写回；**正解是换个非同步的构建目录**。见 `docs/preflight.md` §4.2b）
 - [ ] `build_app.sh`：`swift build -c release` → 组装 `VRun.app`（Info.plist + 图标）
 - [ ] App 通过绝对路径调用 conda 环境的 python 启动侧车（不追求完全自包含，可靠性优先）
 - [ ] `works.md` / `README.md` 定稿：架构、协议、参数含义、滑块面板使用说明、故障排查
@@ -701,7 +762,7 @@ environment.yml            ← conda 层：python 版本、conda 包
 
 | # | 风险 | 影响 | 应对 |
 | --- | --- | --- | --- |
-| R-1 | **`isSimulatedBySoftware` 可能标记软件模拟** | 🔴 若 App 检测，方案根本性失效 | M0 生死验证 2 用探针 App 实测。**无已知规避手段**（除越狱），必须诚实面对 |
+| R-1 | **`isSimulatedBySoftware` 确实会标记软件模拟** | 🔴 **已实测坐实**（2026-10-12）：`false → true`。但**校园 App 是否检测它仍未验证** —— 那才是判死条件 | 用校园 App 实测接受与否（低成本）。**无已知规避手段**（除越狱），必须诚实面对 |
 | R-2 | 校园 App 存在位置之外的反作弊（计步、加速度计） | 🔴 位置注入会被识破 | 超出本工具能力，需如实告知；用户已说明其反作弊基于 GPS 速度与坐标差 |
 | R-3 | `clear` 后定位短暂不准（个例报告） | 🟡 影响博文日常使用 | 清理后给 10–30 s 恢复；必要时重启定位服务；保留 `panic-clear.sh` |
 | R-4 | 1 Hz 高频注入丢点 / 延迟 | 🟡 轨迹失真 | 1 Hz 已属保守；加超时重试；退化到 0.5 Hz |
@@ -774,7 +835,10 @@ M1 完全不依赖手机，**可以先做**；§5 的面板逻辑在 M1 即可�
 
 **环境备忘**
 
-- conda：`/Users/yuanjun/miniconda3/bin/conda`（**不在**非交互 PATH）
-- 环境名：`vrun`（Python 3.12）
+- conda 本体：`/Users/yuanjun/miniconda3/bin/conda`（**不在**非交互 PATH，可用全路径写死）
+- ⚠️ **解释器路径一律解析**：`PY="$(scripts/resolve_python.sh)"` —— 环境实际在
+  **`~/.conda/envs/vrun`**，与 conda 安装位不同（见 F7）。`~/miniconda3` 不会挪，
+  但**环境位置由 `envs_dirs` 决定**，换机器或改一次配置就会失效 —— 稳定性不同，不该一刀切。
+- 环境名：`vrun`（实测 Python 3.12.15）
 - Xcode：`/Applications/Xcode.app` 存在，但 `xcode-select` 当前指向 CLT
 - 无 brew / uv / pipx；git 可用（`/usr/bin/git`）

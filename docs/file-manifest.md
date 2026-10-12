@@ -8,13 +8,20 @@
 >
 > | 项 | 值 |
 > | --- | --- |
-> | 版本 | v1（2026-10-11） |
+> | 版本 | **v2（2026-10-12）** |
 > | 对应 `works.md` | v3 |
 > | 语言约定 | 代码注释、文档、GUI 文案**一律中文** |
 >
-> ⚠️ **重要前提**：截至本文写作时，仓库内**尚无任何代码文件**（只有 `works.md`、`.gitignore`、`LICENSE`、`requirements.txt`、`docs/`）。
-> 因此本文描述的全部是**待建文件的规格**，其中的接口签名是**设计约定**，不是既有代码。
-> 接手 Agent 应当按本文**新建**这些文件，而不是去仓库里寻找它们。
+> ⚠️ **重要前提（v2 更新）**：本文 v1 写作时仓库内**尚无任何代码文件**，
+> 全文描述的都是**待建文件的规格**。**M1 已于 2026-10-11 落地**，
+> `src/vrun/` 下 ① 纯计算层 6 个文件 + `cli.py` + 包入口均已实现（209 测试全绿）。
+>
+> 因此本文现在的地位是：
+>
+> - **已实现部分**（§4.1、`estimate` / `cli`）= 接口**契约**，改动须与代码同步；
+> - **未实现部分**（§4.2 设备层、§5 Swift GUI、`ipc.py` / `recorder.py`）= 仍是**设计约定**。
+>
+> 接手 Agent 应当**先看仓库里有什么**，再对照本文判断某处是「契约」还是「约定」。
 
 ---
 
@@ -39,7 +46,7 @@
 - 想要「**滑块面板**」→ `app/VRun/Sources/VRunApp/` 里带 ★ 的 4 个文件
 - 想要「**证明它是对的**」→ `tests/` + `tests/golden/estimate.json`
 
-**规模概览**：全项目共 **47 项 = 46 个文件 + 1 个运行时目录**（详见 §10 交叉表）。
+**规模概览**：全项目共 **49 项 = 48 个文件 + 1 个运行时目录**（详见 §10 交叉表）。
 
 ---
 
@@ -429,28 +436,52 @@ class TrackEngine:
 ```python
 @dataclass
 class EstimateResult:
+    speed_kmh: float
+    distance_m: float
+    noise_level: str
+    sample_rate: float
+
     pace_s_per_km: float                      # 配速，秒每公里
     pace_str: str                             # "6:00"
     eta_naive_s: float                        # 纯运动（D / v）
-    eta_s: float                              # 修正 ETA（对完整剖面数值积分，权威）
+    eta_s: float                              # 修正 ETA（数值积分，**权威**）
+    eta_closed_form_s: float                  # 修正 ETA（一阶近似，GUI 拖动用）
+    eta_str: str
+
     sigma_v: float                            # 表观速度抖动 1σ，km/h
-    band_1sigma: tuple[float, float]
+    band_1sigma: tuple[float, float] | None   # v̄ 的可行区间，见下方⚠️
     band_2sigma: tuple[float, float] | None   # None = 无安全带（严苛档退化）
+    safety: str                               # "green" / "yellow" / "red"（works.md §5.3）
+    v_lo: float                               # 本设定下瞬时速度的慢端 = v̄(1+δ) − 2σ
+    v_hi: float                               # 本设定下瞬时速度的快端 = v̄(1+f) + 2σ
+
     verdict: dict[str, str]                   # {"R1": "✓", "R3": "⚠️ 临界", ...}
+    clamp_enabled: bool                       # 贴线设定时为 False
 
 
-def estimate(speed_kmh: float, distance_m: float, noise_level: str,
-             sample_rate: float, profile: SpeedProfile,
-             seed: int) -> EstimateResult: ...
+def estimate(speed_kmh: float, distance_m: float = 3000.0,
+             noise_level: str = "realistic", sample_rate: float = 1.0,
+             profile: SpeedProfile | None = None,
+             seed: int = 0) -> EstimateResult: ...
 
 
-def sigma_apparent(dt: float, level: str) -> float:
+def sigma_apparent(dt: float, level: str = "realistic") -> float:
     """works.md §3.5：单轴差分标准差 → 二维位移误差 → 表观速度误差。"""
 
 
-def safety_band(profile: SpeedProfile,
-                sigma_v: float) -> tuple[float | None, float | None]:
-    """works.md §5.3：返回 2σ 安全带 [lo, hi]；无解时返回 (None, None)。"""
+def safety_band(sigma_v: float, profile: SpeedProfile,
+                levels: float = 2.0) -> tuple[float, float] | None:
+    """works.md §5.3：返回「levels·σ 内绝不越界」的 **v̄ 区间**；无解返回 **None**。
+
+    ⚠️ **别把它和 `v_lo` / `v_hi` 搞混** —— works.md §5.4 里两种量都出现了：
+
+    | 量 | 含义 | 回答的问题 |
+    | --- | --- | --- |
+    | `band_2sigma` | **v̄ 的可行区间** | 滑块该停在哪儿才安全？ |
+    | `v_lo` / `v_hi` | 某个既定 v̄ 下**瞬时速度**的取值范围 | 现在这个设定会被噪声推到哪？ |
+
+    `levels` 参数是必需的 —— 面板要同时画 1σ（黄）与 2σ（绿）两条带。
+"""
 ```
 
 **两条必须实现的退化路径**（否则会把「真实结论」当成 bug 修掉）
@@ -569,8 +600,8 @@ class SafetyGuard:
 | 项 | 内容 |
 | --- | --- |
 | **职责** | works.md §4.2 的协议编解码 + 命令分发表 |
-| **依赖** | 各层（只是调用，不做业务逻辑） |
-| **里程碑** | M1（协议定义） / M2（实装 dispatch） |
+| **依赖** | `estimate` / `profile`（**不 import 设备层**） |
+| **里程碑** | ✅ **M1 已完成**（`estimate` 分支 + 编解码 + 服务循环）/ ⛔ M2（`run.*` / `device.*` 实装） |
 
 接口约定：
 
@@ -595,6 +626,13 @@ HANDLERS: dict[str, Callable[..., Awaitable[dict]]] = {
 - 协议是**命令 + 事件**混合，事件不带 id 配对。
   因为同一时刻只可能有一个会话（§5.7 已锁定滑块），天然串行。
 - 中文文案要 `ensure_ascii=False`，否则日志里全是 `\uXXXX`，出了问题根本没法读。
+- **参数校验要在协议层就转成 `ProtocolError`**。放任 `ValueError` 逃逸会被 `serve()`
+  的兜底标成 `internal / 这是侧车的 bug，请反馈` —— 但传错参数是**调用方**的问题，
+  标错方向会让人白忙一场。
+
+> **M1 已达成的能力**：滑块面板的**全部数学**现在就能通过 `vrun serve` 端到端跑通，
+> **不依赖 iPhone**（works.md §5.7）。`estimate` 是面板唯一的数据源，它通了，
+> M3 的 `SpeedPanel` / `PreviewMath` / `SafetyBand` 就有了一个可离线联调的对手方。
 
 #### 4.3.2 `src/vrun/recorder.py` — 落盘
 
@@ -621,21 +659,39 @@ def summarize(samples: list[Sample]) -> dict:
 
 | 项 | 内容 |
 | --- | --- |
-| **职责** | 子命令：`simulate` / `estimate` / `serve` / `device-status` / `cleanup` |
-| **里程碑** | M1 |
+| **职责** | 子命令：离线三件套（`estimate` / `golden` / `simulate`）+ 设备占位（`device-status` / `panic-clear`）+ 侧车入口（`serve`，**M2 待建**） |
+| **里程碑** | M1（离线三件套 ✅）/ M2（`serve` + 设备子命令） |
 
 ```bash
-vrun simulate --route route.json --speed 10 --noise realistic --distance 3000 --out logs/
-vrun estimate --speed 10 --distance 3000     # ★ 不需要设备
-vrun serve                                    # 启动侧车，JSON Lines 走 stdin/stdout
+# ── 已实现（M1，不需要 iPhone）──
+vrun estimate --speed 10 --distance 3000      # ★ 单点预览：配速/ETA/安全带/判定
+vrun golden                                   # works.md §5.4 基准表全 11 行
+vrun simulate --route route.json --speed 10 --csv logs/run.csv
+
+# ── 占位（M2 实现，未实现时 exit 2 并打印可用子命令）──
 vrun device-status
-vrun cleanup                                  # 手动紧急清除
+vrun panic-clear                              # 手动紧急清除
+
+# ── 待建（M2）──
+vrun serve                                    # 启动侧车，JSON Lines 走 stdin/stdout
 ```
 
 - **`vrun estimate` 不 import `device.py`**（用延迟导入）。
   这是「§5 面板逻辑在 M1 全部可离线验证」的技术前提——在没装 `pymobiledevice3` 的环境里它也必须能跑。
-- `serve` 是 GUI 唯一会调用的子命令。
+- `serve` 是 GUI 唯一会调用的子命令，依赖 `ipc.py` ✅（M1 已建）。
 - 所有子命令都要有中文 `--help`；GUI 崩溃时用户能靠 CLI 自救。
+
+> **⚠️ 与本文 v1 的差异（v2 已对齐实现）**
+>
+> | 项 | v1 写的 | 实际实现 | 原因 |
+> | --- | --- | --- | --- |
+> | 子命令名 | `cleanup` | **`panic-clear`** | 它是**紧急**清除（GUI 崩溃后的救援），不是会话收尾；与 `scripts/panic-clear.sh`（works.md §2.3）同名更好记 |
+> | 输出参数 | `--out logs/` | **`--csv <路径>`** | 显式指明格式；目录语义会在「CSV 还是 GPX」上产生歧义 |
+> | `golden` | 未列 | **已实现** | §5.4 全表是跨语言契约，需要一条命令能直接导出对照 |
+>
+> **`--distance` 的缺省语义是 `None`，不是 3000**（曾有 bug，见 `tests/test_cli.py`）：
+> 给了 `--route` 却没给 `--distance` 时，**保持路线原长**；
+> 默认值若取 3000，会把用户画好的路线无声缩放掉。
 
 ---
 
@@ -684,7 +740,7 @@ vrun cleanup                                  # 手动紧急清除
 
 ---
 
-## 6. 测试 · `tests/`（9 个文件）
+## 6. 测试 · `tests/`（11 个文件）
 
 | 文件 | 覆盖内容 | 里程碑 |
 | --- | --- | --- |
@@ -693,8 +749,10 @@ vrun cleanup                                  # 手动紧急清除
 | `tests/test_route.py` | 总长误差 < 0.5%；`point_at` 端点与中点；缩放正确性 | M1 |
 | `tests/test_profile.py` | 稳态速度误差 < 1%；clamp 生效；ramp 段不越界；`clamp_enabled=False` 时贴线 | M1 |
 | `tests/test_noise.py` | 同种子**逐字节一致**；后验 σ 与自相关符合设定 ±10%；跳点开关 | M1 |
-| `tests/test_engine.py` | **假时钟离线跑完 3 km**；平均速度 ±1%；总距离 ±0.5% | M1 |
+| `tests/test_engine.py` | **假时钟离线跑完 3 km**；平均速度 ±1%；总距离 ±0.5%；**`reset()` 与 `run()` 的语义分工** | M1 |
 | `tests/test_estimate.py` ★ | §5.4 golden 全表逐行断言；严苛档返回 `None`；贴线不阻止 | M1 |
+| `tests/test_cli.py` | `--distance` 的**缺省语义**（路线不被无声缩放）；设备子命令未实现时的降级路径 | M1 |
+| `tests/test_ipc.py` | 协议编解码（flush / 中文不转义）；`estimate` 分支不 import 设备层；坏消息不杀服务循环；**真起子进程的端到端** | M1 |
 | `tests/golden/estimate.json` ★ | §5.4 全表基准数据，**pytest 与 Swift 单测共用** | M1 |
 | `tests/test_env_resolution.py` | F7 回归：解出的解释器可用 / 版本 3.12 / 含项目依赖；环境名不存在时**报错而非静默回落** | M0 |
 
@@ -820,16 +878,16 @@ environment.yml            ← conda 层：python 版本、conda 包
 | --- | --- | --- | --- |
 | **既有** | `works.md`、`LICENSE` | 2 | — |
 | **M0** 环境与生死验证 | `requirements.txt`、`environment.yml`、`scripts/bootstrap_env.sh`、`scripts/preflight.sh`、`probe/ProbeApp.swift`、`.gitignore` | 6 | ✅ |
-| **M1** 轨迹内核与估算 | ① 纯计算层 6 + `ipc.py` + `recorder.py` + `cli.py` + `__init__.py` + `__main__.py` + `tests/` 8 | 19 | ❌ |
+| **M1** 轨迹内核与估算 | ① 纯计算层 6 + `ipc.py` + `recorder.py` + `cli.py` + `__init__.py` + `__main__.py` + `tests/` 10 | 21 | ❌ |
 | **M2** 设备桥 | `device.py`、`safety.py`、`scripts/panic-clear.sh` | 3 | ✅ |
 | **M3** macOS GUI | `app/VRun/` 全部 | 11 | ❌（可对假数据离线调试） |
 | **M4** 冒烟验证 | `docs/findings.md` | 1 | ✅ |
 | **M5** 打包与文档 | `README.md`、`scripts/build_app.sh` | 2 | ❌ |
 | **文档（跨阶段）** | `docs/preflight.md`（M0 产出）、`docs/file-manifest.md`（本轮） | 2 | — |
 | **运行时** | `logs/`（**不入库**） | 1 | — |
-| **合计** | | **47** | |
+| **合计** | | **49** | |
 
-> **47 项 = 46 个文件 + 1 个运行时目录。**
+> **49 项 = 48 个文件 + 1 个运行时目录。**
 > 其中 **M1 的 19 项完全不需要 iPhone**，是风险最低、价值最高的部分。
 
 ---
@@ -858,3 +916,5 @@ environment.yml            ← conda 层：python 版本、conda 包
 | 日期 | 版本 | 变更 |
 | --- | --- | --- |
 | 2026-10-11 | v1 | 首版。作为 `works.md` §4.4 的展开版；补入 `Models.swift` / `SessionController.swift` / `RouteModel.swift` 与 `requirements.txt`；明确 numpy 使用纪律与两个依赖文件的分工 |
+| 2026-10-12 | v2.1 | **`ipc.py` 与 `recorder.py` 落地**（M1 全部完成）：① `ipc.py` 标注为 M1 已完成，补充「参数校验须在协议层转成 `ProtocolError`」的设计要点；② `recorder.py` 补充 GPX 回放用途；③ 新增 `tests/test_ipc.py`（含真起子进程的端到端）；④ 测试文件数 10 → 11，规模计数 48 → 49 |
+| 2026-10-12 | v2 | **与 M1 的实现对齐**（代码审查后）：① `EstimateResult` 补齐 `safety` / `v_lo` / `v_hi` / `clamp_enabled` 等 GUI 必需字段；② `safety_band` 签名改为 `(sigma_v, profile, levels)` 并返回 `None`（非 `(None, None)`），同时写明它与 `v_lo`/`v_hi` 的区别；③ CLI 子命令清单对齐实现（`panic-clear`、`--csv`、新增 `golden`，`serve` 标为待建）；④ 补 `tests/test_cli.py`；⑤ 规模计数 47 → 48；⑥ 抬头的前提声明改为「M1 已落地」 |
