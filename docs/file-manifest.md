@@ -695,24 +695,42 @@ vrun serve                                    # 启动侧车，JSON Lines 走 st
 
 ---
 
-## 5. Swift GUI · `app/VRun/`（11 个文件）
+## 5. Swift GUI · `app/VRun/`（13 个文件）
 
 > 采用 **SwiftPM 包**而非 Xcode 工程——这样 `swift build` 单独就能构建，
 > 不依赖 Xcode 组件是否装好（这是风险 R-5 的兜底路径）。
+>
+> **实测状态（2026-10-13）**：`swift build` 通过（1.6 s）、`swift test` 16 条全绿、
+> App 实机启动并成功拉起侧车。`run.*` / `device.*` 系列命令仍是 M2 占位，
+> 侧车会返回结构化 `not_implemented`（GUI 里以红色日志明示，不是静默失败）。
 
-| 文件 | 职责 | 里程碑 |
+| 文件 | 职责 | 里程碑 | 状态 |
+| --- | --- | --- | --- |
+| `app/VRun/Package.swift` | SwiftPM 包定义：`swift-tools-version 6.2`、`platforms: [.macOS(.v26)]`、链接 MapKit + CoreLocation、可执行目标 `VRunApp` + 测试目标 `VRunAppTests` | M3 | ✅ |
+| `Sources/VRunApp/VRunApp.swift` | `@main` 入口；窗口装配；`locateRepoRoot()` 解析仓库根；启动时兜底 `device.cleanup` | M3 | ✅ |
+| `Sources/VRunApp/RouteCanvas.swift` | `MKMapView` 的 `NSViewRepresentable` 封装：钢笔点选画折线、自绘绿圈起点提示（`GreenDotView`） | M3 | ✅ |
+| `Sources/VRunApp/RouteModel.swift` | 路线点集与编辑（加点、撤销、缩放、haversine 累计长度）；与绘制解耦 | M3 | ✅ |
+| `Sources/VRunApp/SpeedPanel.swift` ★ | works.md §5.1 面板：配速线性滑块 + 吸附点、距离/采样率/噪声选择器、读数、R1–R5 判定、漂移提示 | M3 | ✅ |
+| `Sources/VRunApp/PreviewMath.swift` ★ | §3.6 闭式解、§3.5 `sigmaApparent`、§5.3 安全带与三级判定、§5.2 滑块映射的 Swift 镜像 | M3 | ✅ |
+| `Sources/VRunApp/SafetyBand.swift` ★ | §5.3 色带绘制（绿/黄/红 + 游标），含「严苛档无安全带」的退化渲染 | M3 | ✅ |
+| `Sources/VRunApp/Models.swift` | IPC 消息的 `Codable` 结构（`Tick` / `EstimateResult` / `Command` / `NoiseLevel` / `LogEntry` …） | M3 | ✅ |
+| `Sources/VRunApp/SessionController.swift` | 会话状态机（空闲→预置→运行→暂停→停止→已清理）；§5.7 的滑块锁定；**同时是 `SidecarClientDelegate` 的唯一实现** | M3 | ✅ |
+| `Sources/VRunApp/SidecarClient.swift` | `Process` + `Pipe` 启动侧车；JSON Lines 逐行解码；解释器经 `resolve_python.sh` 解析 | M3 | ✅ |
+| `Sources/VRunApp/LogPanel.swift` + `LogStore` | 可滚动彩色日志、按天筛选、debug 开关、自动滚动 | M3 | ✅ |
+| `Sources/VRunApp/MainView.swift` | 窗口布局（依草图）：可拖宽左栏 + 右侧竖排钢笔工具栏 + 右下状态浮窗 + 四角 overlay | M3 | ✅ |
+| `Sources/VRunApp/Style.swift` | Liquid Glass 设计令牌、`GlassPanel` / `PanelHeader` / `Chip` / `KV` 组件 | M3 | ✅ |
+| `Tests/VRunAppTests/PreviewMathTests.swift` | **跨语言契约测试**：与 `tests/golden/estimate.json` 同源的 §5.4 基准表断言（16 条） | M3 | ✅ |
+| `app/VRun/bundle/Info.plist` | 应用元信息（Bundle ID / 版本 / 最低系统版本） | M5 | ⬜ 未写（现由 `scripts/build_app.sh` 在组装时生成） |
+| `scripts/build_app.sh` | M5：组装 `VRun.app`（Info.plist + 可执行文件 + `Resources/repo` 符号链接 + ad-hoc 签名） | M5 | ✅ |
+
+### 5.0.1 与草图的差异说明（**重要**）
+
+`MainView.swift` 相对 §5.1 原规格**多出两块**，都是按草图实现、manifest 原先没有的：
+
+| 新增 | 草图依据 | 为什么需要 |
 | --- | --- | --- |
-| `app/VRun/Package.swift` | SwiftPM 包定义：macOS 平台版本、MapKit 链接、可执行目标 `VRunApp` | M3 |
-| `Sources/VRunApp/VRunApp.swift` | `@main` 入口；创建窗口；注入全局状态 | M3 |
-| `Sources/VRunApp/RouteCanvas.swift` | `MKMapView` 的 `NSViewRepresentable` 封装：点选画折线、显示总长度、当前位置光标 | M3 |
-| `Sources/VRunApp/RouteModel.swift` | 路线点集与编辑（增删点、撤销、按目标距离缩放）；与绘制解耦 | M3 |
-| `Sources/VRunApp/SpeedPanel.swift` ★ | works.md §5.1 面板布局：滑块 + 配速 + ETA + 判定预期 + 会话按钮 | M3 |
-| `Sources/VRunApp/PreviewMath.swift` ★ | §3.6 闭式解的 Swift 镜像；拖动时 60 fps 即时反馈 | M3 |
-| `Sources/VRunApp/SafetyBand.swift` ★ | §5.3 色带绘制（`Canvas`），含「严苛档无安全带」的退化渲染 | M3 |
-| `Sources/VRunApp/Models.swift` | IPC 消息的 `Codable` 结构（`Tick` / `EstimateResult` / `Command` …） | M3 |
-| `Sources/VRunApp/SessionController.swift` | 会话状态机（空闲→预置→运行→暂停→停止→已清理）；§5.7 的滑块锁定 | M3 |
-| `Sources/VRunApp/SidecarClient.swift` | `Process` + `Pipe` 启动侧车；JSON Lines 收发；断线重连 | M3 |
-| `app/VRun/bundle/Info.plist` | 应用元信息（Bundle ID / 版本 / 最低系统版本） | M3 |
+| 左栏**可拖动调宽 + 可折叠**（`divider` + 右上角悬浮按钮） | 草图标了「DK 可调面板」与悬浮按钮 | 滑块面板窄了读数被截断、宽了浪费地图；折叠后纯看地图 |
+| 独立**日志面板**，支持按天筛选、debug 开关 | 草图左下角的日志块 | 1 Hz tick 会淹没有用信息，按天筛选才查得动历史 |
 
 ### 5.1 与 `works.md` §4.4 的差异说明（**重要**）
 
@@ -731,12 +749,67 @@ vrun serve                                    # 启动侧车，JSON Lines 走 st
 
 - `PreviewMath.swift` **只能**实现 §3.6 的闭式解，且必须与 `tests/golden/estimate.json` 对齐。
   它**不是**第二真相源：松手 250 ms 后仍以侧车 `estimate.result` 为准（§5.6）。
+  ⚠️ 对齐用**秒级容差（±1 s）**，不要断言显示文本相等 —— 一阶近似残差在
+  12.4 km/h 处恰好跨过取整边界，会让「14:38 / 14:39」这种 1 秒差异变成
+  假失败。详见 findings.md **F10**。
 - `SidecarClient` 启动侧车时必须用 python 的**绝对路径**，但该路径
   **一律由 `scripts/resolve_python.sh` 解析**（§7.1），任何地方都不得硬编码。
   两个理由：① conda 不在非交互 shell 的 PATH（works.md §1.3 实测）；
   ② 环境的实际位置由 conda `envs_dirs` 决定，写死必错（findings.md F7）。
+- ⚠️ **仓库根解析必须支持 `VRUN_REPO_ROOT` 环境变量**（2026-10-13 实测踩到）。
+  为了绕开 `~/Documents` 的 iCloud xattr 污染，SwiftPM 构建目录被指到
+  `--scratch-path /tmp/vrun-swift`，**可执行文件因此不在仓库内**，从它上溯找
+  `scripts/resolve_python.sh` 必然失败；`open -a` 启动时 cwd 又是 `/`。
+  两条自然路径全废 ⇒ repoRoot 退化成 `/` ⇒ 侧车报「找不到 /scripts/resolve_python.sh」。
+  **开发态请显式指定**：
+  ```bash
+  export VRUN_REPO_ROOT=/Users/yuanjun/Documents/Virtual_Location_Software_For_Apple
+  /tmp/vrun-swift/out/Products/Debug/VRunApp
+  ```
+  打包后走 `VRun.app/Contents/Resources/repo` 符号链接即可，无需环境变量。
 - GUI 被强杀时**无法保证清理**。因此 `SessionController` 要在 App **启动时主动发一次
   `device.cleanup`**，把上一次崩溃残留的虚拟定位一并扫掉。
+- 四个角上的 overlay **各占一角**：钢笔工具栏右侧居中、状态浮窗右下、提示左上、
+  开合按钮右上。**不要**把它们放进同一个 `ZStack` —— 默认都是 `.center` 对齐，
+  会叠在一起（草图布局已踩过一次，见 `MainView.mapArea`）。
+- SwiftPM 的 `.build/` **同样不能放在 `~/Documents` 里**。`swift test` 会在
+  **编译全部通过之后**才在签名 `.xctest` 时报 `resource fork ... detritus`，
+  症状极具迷惑性。所有 Swift 命令一律加 `--scratch-path /tmp/vrun-swift`。
+- ⚠️ **开发/调试必须走 `.app`，不能直接跑裸可执行文件**（2026-10-13 实测）。
+  裸可执行文件没有 bundle identifier，macOS 会连带出三个症状，
+  而且**每一个都容易被误判成 GUI 代码写坏了**：
+
+  | 症状 | 真实原因 |
+  | --- | --- |
+  | Dock 里没有图标 | 没 bundle ⇒ 没有图标槽位 |
+  | **窗口无法置前**（`AXRaise` / `set frontmost` 全部静默失败） | 没 bundle ⇒ 拿不到正常 activation policy |
+  | 菜单栏是别的 app 的 | 同上，进程没有自己的菜单栏身份 |
+
+  所以 `scripts/build_app.sh` 不是「锦上添花的打包步骤」，而是**开发态的必需品**。
+  打包后 `Contents/Resources/repo` 符号链接已经指向仓库根，
+  **不再需要** `VRUN_REPO_ROOT` 环境变量（只有直接跑裸可执行文件时才需要）。
+- ⚠️ 写 `.sh` 时注意 **locale**：`LANG=C.UTF-8` 下 bash 解析 `$VAR中文标点`
+  会把多字节字符算进变量名，报 `VAR?: unbound variable`（实测踩到）。
+  变量后面紧跟中文时一律写 `${VAR}`。
+- ⚠️ macOS 沙箱限制下 `tccutil`/辅助功能授权不可用时，
+  `screencapture -l <windowID>` 仍是抓指定窗口的可靠手段；
+  `AXRaise` 不可靠时改用 `CGWindowListCopyWindowInfo` 取 `kCGWindowNumber`。
+- ⚠️ **`@Published` 属性绝不能在 `didSet` 里给自己赋值**（2026-10-13 实测崩溃）。
+  拖一下速度滑块整个 app 爆栈，诊断报告是
+  `Thread stack size exceeded due to excessive recursion`，递归 87059 帧
+  全部在 `speedKmh.setter` ↔ `speedKmh.didset` 之间互跳，栈底是滑块的 Binding setter。
+  原因：`@Published` 把 setter 包成了 `Published.withMutation`，
+  Swift「在同一属性的观察器里赋值不再触发自己」这条保护**因此失效**。
+  正解：私有 `@Published` 存储 + 对外计算属性，**在写入侧夹紧一次**
+  （`SessionController.speedKmh`）。回归护栏
+  `testSpeedSetterDoesNotRecurse`（2200 次连续写入，旧实现下会直接打死测试进程）。
+- ⚠️ 顶部控件要自己掌控：窗口用 `.windowStyle(.hiddenTitleBar)`。
+  系统标题的占位宽度**随窗口宽度变化**，侧栏按钮无论摆在红绿灯后还是固定 x
+  都会和标题撞上；隐藏标题后整条顶部独占，按钮位置才是确定的。
+  内容视图会延伸到标题栏底下，所以要把控件提上去得用**负偏移**
+  （`MainView.titleBarInset` = 实测 37 pt）。
+- ⚠️ `glassEffect` 只画折射层，**不给内容留白**。
+  浮窗里的文字必须显式 `.padding`，否则会直接压在玻璃边缘上（实测看着像被裁了一刀）。
 
 ---
 
@@ -880,12 +953,12 @@ environment.yml            ← conda 层：python 版本、conda 包
 | **M0** 环境与生死验证 | `requirements.txt`、`environment.yml`、`scripts/bootstrap_env.sh`、`scripts/preflight.sh`、`probe/ProbeApp.swift`、`.gitignore` | 6 | ✅ |
 | **M1** 轨迹内核与估算 | ① 纯计算层 6 + `ipc.py` + `recorder.py` + `cli.py` + `__init__.py` + `__main__.py` + `tests/` 10 | 21 | ❌ |
 | **M2** 设备桥 | `device.py`、`safety.py`、`scripts/panic-clear.sh` | 3 | ✅ |
-| **M3** macOS GUI | `app/VRun/` 全部 | 11 | ❌（可对假数据离线调试） |
+| **M3** macOS GUI | `app/VRun/` 全部（13 个，含 `PreviewMathTests`） | 13 | ❌（可对假数据离线调试） |
 | **M4** 冒烟验证 | `docs/findings.md` | 1 | ✅ |
-| **M5** 打包与文档 | `README.md`、`scripts/build_app.sh` | 2 | ❌ |
+| **M5** 打包与文档 | `README.md`、`scripts/build_app.sh` | 2 | ❌（`build_app.sh` ✅ 已写，只剩 `README.md`） |
 | **文档（跨阶段）** | `docs/preflight.md`（M0 产出）、`docs/file-manifest.md`（本轮） | 2 | — |
 | **运行时** | `logs/`（**不入库**） | 1 | — |
-| **合计** | | **49** | |
+| **合计** | | **51** | |
 
 > **49 项 = 48 个文件 + 1 个运行时目录。**
 > 其中 **M1 的 19 项完全不需要 iPhone**，是风险最低、价值最高的部分。
@@ -915,6 +988,7 @@ environment.yml            ← conda 层：python 版本、conda 包
 
 | 日期 | 版本 | 变更 |
 | --- | --- | --- |
+| 2026-10-13 | **v3** | **M3 GUI 落地**：① §5 改为 13 个文件并逐个标注 ✅/⬜，补入 `LogPanel.swift` / `MainView.swift` / `Style.swift` / `PreviewMathTests.swift`；② 新增 §5.0.1 登记草图带来的两处扩展（可调宽+可折叠左栏、独立日志面板）；③ §5.2 补三条实测约束：`VRUN_REPO_ROOT` 必填的理由、四角 overlay 不可同 `ZStack`、`.build/` 也要挪出 `~/Documents`；④ 引入 findings **F10**（闭式解 0.76 s 残差翻转显示秒数 → 对齐改用秒级容差）；⑤ 规模计数 49 → 51 |
 | 2026-10-11 | v1 | 首版。作为 `works.md` §4.4 的展开版；补入 `Models.swift` / `SessionController.swift` / `RouteModel.swift` 与 `requirements.txt`；明确 numpy 使用纪律与两个依赖文件的分工 |
 | 2026-10-12 | v2.1 | **`ipc.py` 与 `recorder.py` 落地**（M1 全部完成）：① `ipc.py` 标注为 M1 已完成，补充「参数校验须在协议层转成 `ProtocolError`」的设计要点；② `recorder.py` 补充 GPX 回放用途；③ 新增 `tests/test_ipc.py`（含真起子进程的端到端）；④ 测试文件数 10 → 11，规模计数 48 → 49 |
 | 2026-10-12 | v2 | **与 M1 的实现对齐**（代码审查后）：① `EstimateResult` 补齐 `safety` / `v_lo` / `v_hi` / `clamp_enabled` 等 GUI 必需字段；② `safety_band` 签名改为 `(sigma_v, profile, levels)` 并返回 `None`（非 `(None, None)`），同时写明它与 `v_lo`/`v_hi` 的区别；③ CLI 子命令清单对齐实现（`panic-clear`、`--csv`、新增 `golden`，`serve` 标为待建）；④ 补 `tests/test_cli.py`；⑤ 规模计数 47 → 48；⑥ 抬头的前提声明改为「M1 已落地」 |

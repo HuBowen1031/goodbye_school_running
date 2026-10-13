@@ -712,6 +712,16 @@ environment.yml            ← conda 层：python 版本、conda 包
       （本项目位于 FileProvider 同步目录，iCloud 会反复注入 `com.apple.FinderInfo`，
       导致 `codesign` 报 `resource fork, Finder information, or similar detritus not allowed`。
       治标是 `xattr -cr`，会被再次写回；**正解是换个非同步的构建目录**。见 `docs/preflight.md` §4.2b）
+- [x] **同一个坑对 SwiftPM 的 `.build/` 也成立**（2026-10-13 实测）：
+      `swift test` 签名 `.xctest` 时报同一个 detritus 错误，编译全部通过但**签名阶段挂掉**。
+      ⇒ 所有 Swift 命令加 `--scratch-path /tmp/vrun-swift`：
+      ```bash
+      cd app/VRun
+      export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+      swift build --scratch-path /tmp/vrun-swift
+      swift test  --scratch-path /tmp/vrun-swift
+      ```
+      ⚠️ 症状有迷惑性：报错发生在**代码编译完之后**，容易误判成代码问题。
 - [ ] `build_app.sh`：`swift build -c release` → 组装 `VRun.app`（Info.plist + 图标）
 - [ ] App 通过绝对路径调用 conda 环境的 python 启动侧车（不追求完全自包含，可靠性优先）
 - [ ] `works.md` / `README.md` 定稿：架构、协议、参数含义、滑块面板使用说明、故障排查
