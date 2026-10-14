@@ -28,6 +28,7 @@ from vrun.ipc import (
     COMMANDS,
     ERR_BAD_COMMAND,
     ERR_BAD_JSON,
+    ERR_BAD_ARGS,
     ERR_NOT_IMPLEMENTED,
     ProtocolError,
     dispatch,
@@ -141,16 +142,36 @@ class TestEstimateHandler:
         resp = self._ask(speed=11.0, noise="harsh")
         assert resp["band_2sigma"] is None
 
-    def test_does_not_import_device_layer(self) -> None:
-        """★ 坑③：这条分支不许把设备层拖进来。
+    def test_estimate_branch_never_imports_device_layer(self) -> None:
+        """★ 坑③：``estimate`` 分支不许把设备层拖进来。
 
         works.md §5.7 要求「未连接 iPhone 时面板完全可用」。
-        """
-        import sys as _sys
 
-        assert "vrun.device" not in _sys.modules
-        assert "pymobiledevice3" not in _sys.modules
-        self._ask(speed=10.0)
+        ⚠️ 必须在**干净子进程**里查：本测试进程里别的用例已经 import 过
+        ``vrun.device``（test_device.py），``sys.modules`` 里挂着，
+        在这里断言只会测到「谁先跑的」这种假信号。
+        真正的护栏在 ``tests/test_device.py::test_pure_layer_never_imports_pymobiledevice3``。
+        """
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        src = str(Path(__file__).resolve().parent.parent / "src")
+        code = (
+            "import sys, json, asyncio\n"
+            "from vrun.ipc import dispatch\n"
+            "asyncio.run(dispatch({'command':'estimate','speed':10.0}))\n"
+            "print('LEAKED' if 'pymobiledevice3' in sys.modules else 'CLEAN')\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True,
+            env={**os.environ, "PYTHONPATH": src},
+        )
+        assert "LEAKED" not in proc.stdout, (
+            f"estimate 分支引入了设备层：{proc.stdout.strip()} {proc.stderr.strip()}"
+        )
 
     def test_accepts_custom_profile(self) -> None:
         resp = self._ask(speed=10.0, profile={"t_w": 15.0, "r0": 0.9})
@@ -165,6 +186,58 @@ class TestEstimateHandler:
 #  分发与错误
 # ══════════════════════════════════════════════════════════════
 
+class FakeBridge:
+    """设备层的假替身 —— 让测试**完全不碰真机**。"""
+
+    def __init__(self, connect_fails: bool = False) -> None:
+        self.connect_fails = connect_fails
+        self.set_calls: list[tuple[float, float]] = []
+        self.clear_calls = 0
+        self.closed = False
+        self.set_timeout = 2.0
+        self.set_retries = 2
+
+    async def connect(self):
+        if self.connect_fails:
+            raise RuntimeError("假连接失败")
+        return None
+
+    async def set_location(self, lat, lon, **kw):
+        self.set_calls.append((lat, lon))
+
+    async def clear(self) -> bool:
+        self.clear_calls += 1
+        return True
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+    def status(self):
+        from vrun.device import DeviceStatus
+        return DeviceStatus(connected=True, tunnel_up=True, phase="ready")
+
+
+@pytest.fixture
+def fake_device(monkeypatch):
+    """把 ipc 模块的单例桥换成假桥。
+
+    ⚠️ 为什么必须有这个 fixture（2026-10-14 实测踩到）：
+    隧道是**进程级单例**（PyTCP 网络栈全局唯一）。M2 实装之后，
+    ``device.status`` 会真的去连真机，于是
+        ① 测试结果取决于「手机此刻插没插」 —— CI 上必挂
+        ② 建好的隧道被下一条用例抢走 → **随机卡死**（真的卡住过）
+    所以设备层的单测一律注入假桥，跑完还原 —— 用例之间不共享设备状态。
+    """
+    import vrun.ipc as ipc
+
+    bridge = FakeBridge()
+    monkeypatch.setattr(ipc, "_BRIDGE", bridge, raising=False)
+    ipc.reset_shared_state()
+    ipc._BRIDGE = bridge
+    yield bridge
+    ipc.reset_shared_state()
+
+
 class TestDispatch:
     def test_missing_command_field(self) -> None:
         with pytest.raises(ProtocolError) as ei:
@@ -177,20 +250,55 @@ class TestDispatch:
         assert ei.value.code == ERR_BAD_COMMAND
         assert "estimate" in ei.value.hint      # 提示里要列出可用命令
 
-    def test_device_commands_report_not_implemented(self) -> None:
-        """M2 未实现的命令必须**结构化报错**，不能静默成功。
+    def test_run_commands_reject_bad_state(self, fake_device) -> None:
+        """``run.*`` / ``route.set`` 在**状态不对**时必须结构化报错。
 
-        静默成功会让 GUI 停在「准备中」而没人知道出了什么事。
+        M2 实装后它们不再是占位，但「时序不对」依然必须报错：
+        没路线就 prepare、没 prepare 就 start —— 这两类都会被 GUI 触发
+        （用户连点两次按钮）。
         """
-        for cmd in (CMD_RUN_START, "route.set", "device.cleanup"):
-            with pytest.raises(ProtocolError) as ei:
-                asyncio.run(dispatch({"command": cmd}))
-            assert ei.value.code == ERR_NOT_IMPLEMENTED
+        # 没路线 → prepare 失败
+        with pytest.raises(ProtocolError) as ei:
+            asyncio.run(dispatch({"command": "run.prepare"}))
+        assert ei.value.code == ERR_BAD_ARGS
 
-    def test_device_status_is_offline_safe(self) -> None:
+        # 没 prepare → start 失败
+        with pytest.raises(ProtocolError):
+            asyncio.run(dispatch({"command": CMD_RUN_START, "speed": 10.0}))
+
+        # 非法 route.set（点数不足）→ bad_args
+        with pytest.raises(ProtocolError) as ei:
+            asyncio.run(dispatch({"command": "route.set", "points": [[30.5, 103.9]]}))
+        assert ei.value.code == ERR_BAD_ARGS
+
+        # 载荷类型不对 → bad_args
+        with pytest.raises(ProtocolError) as ei:
+            asyncio.run(dispatch({"command": "route.set", "points": "not-a-list"}))
+        assert ei.value.code == ERR_BAD_ARGS
+
+    def test_device_cleanup_is_implemented_not_a_stub(self, fake_device) -> None:
+        """``device.cleanup`` 已实装：不该再报 ``not_implemented``。
+
+        它在 GUI 每次启动时都会被发一次（file-manifest §5.2 的兜底清理），
+        仍然报「未实现」的话这条兜底就是假的。
+        """
+        try:
+            asyncio.run(dispatch({"command": "device.cleanup"}))
+        except ProtocolError as exc:
+            assert exc.code != ERR_NOT_IMPLEMENTED, "device.cleanup 仍是占位实现"
+
+    def test_device_status_reports_bridge_state(self, fake_device) -> None:
+        """``device.status`` 回报的必须是**桥的真实状态**。
+
+        M2 实装后它不再硬编码 ``connected=False``。
+        假桥说连上了，事件里就该说连上了 —— 这里验证的正是
+        「状态真的透传了，而不是又写死一份」。
+        """
         resp = asyncio.run(dispatch({"command": CMD_DEVICE_STATUS}))
         assert resp["event"] == "device"
-        assert resp["connected"] is False
+        assert resp["connected"] is True
+        assert resp["tunnel_up"] is True
+        assert resp["phase"] == "ready"
 
     def test_every_documented_command_has_a_handler(self) -> None:
         from vrun.ipc import HANDLERS

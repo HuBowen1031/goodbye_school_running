@@ -231,25 +231,88 @@ def _cmd_gpx(args: argparse.Namespace) -> int:
 
 
 def _cmd_device_status(args: argparse.Namespace) -> int:  # noqa: ARG001
-    return _device_stub("device-status")
+    """探测设备状态。
+
+    ⚠️ 刻意**不因为「没插手机」而报错** —— 这是状态查询，不是操作。
+       返回非零会让 ``panic-clear.sh`` 的调用链误判。
+    """
+    import asyncio
+
+    try:
+        from .device import DeviceBridge
+    except ImportError as exc:
+        print(f"设备层不可用：{exc}", file=sys.stderr)
+        return 2
+
+    bridge = DeviceBridge()
+    snapshot = None
+
+    async def probe() -> None:
+        nonlocal snapshot
+        try:
+            await bridge.connect()
+        except Exception as exc:
+            bridge._set_status(error=str(exc))     # 如实记录，不吞
+        finally:
+            # ★ 必须在 aclose() **之前**取快照。
+            #   aclose() 会把 connected/tunnel/phase 重置为断开态 ——
+            #   读在它之后的话，这命令永远只会打印「没连」，
+            #   哪怕刚才隧道真的建起来了。这正是 2026-10-14 首跑就撞上的 bug。
+            snapshot = bridge.status()
+            await bridge.aclose()
+
+    asyncio.run(probe())
+
+    st = snapshot if snapshot is not None else bridge.status()
+    print(f"阶段      {st.phase}")
+    print(f"已连接    {'是' if st.connected else '否'}"
+          + (f"（{st.device_name}）" if st.device_name else ""))
+    print(f"DDI       {'已挂载' if st.ddi_mounted else '未确认'}")
+    print(f"隧道      {'已建立' if st.tunnel_up else '未建立'}")
+    print(f"已注入    {st.injected} 点（丢弃 {st.dropped} 点）")
+    if st.error:
+        print(f"错误      {st.error}", file=sys.stderr)
+    return 0
 
 
 def _cmd_panic_clear(args: argparse.Namespace) -> int:  # noqa: ARG001
-    return _device_stub("panic-clear")
+    """紧急清除注入的位置（works.md §2.3）。
 
+    这是 safety.py 最后一道保险的下游，**必须自己就能跑**：
+    它被调用时，主进程很可能已经没了。
 
-def _device_stub(name: str) -> int:
+    退出码 0 = 清掉了；2 = 没清掉。上层据此决定要不要继续报警。
+    """
+    import asyncio
+
     try:
-        from . import device  # noqa: F401
-    except ImportError:
-        print(
-            f"`{name}` 需要设备层（src/vrun/device.py），它属于里程碑 M2，尚未实现。\n"
-            "当前可用的子命令：estimate / golden / simulate —— 三者都不需要 iPhone。",
-            file=sys.stderr,
-        )
+        from .device import DeviceBridge
+    except ImportError as exc:
+        print(f"设备层不可用：{exc}", file=sys.stderr)
         return 2
-    print(f"`{name}` 已就绪（M2 实现）", file=sys.stderr)
-    return 0
+
+    bridge = DeviceBridge()
+
+    async def run() -> bool:
+        try:
+            # 必须先连上才谈得上 clear：没通道时 clear 是空操作，
+            # 而**空操作会被误读成「清干净了」**。
+            await bridge.connect()
+        except Exception as exc:
+            print(f"✗ 连不上设备，无法清除：{exc}", file=sys.stderr)
+            return False
+
+        try:
+            ok = await bridge.clear()
+            if ok:
+                print("✓ 已清除虚拟定位。")
+            else:
+                print("✗ 清除指令未生效。", file=sys.stderr)
+            return ok
+        finally:
+            await bridge.aclose()
+
+    return 0 if asyncio.run(run()) else 2
 
 
 # ══════════════════════════════════════════════════════════════

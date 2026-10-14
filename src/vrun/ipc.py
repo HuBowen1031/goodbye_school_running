@@ -203,13 +203,215 @@ async def _handle_estimate(payload: dict) -> Optional[dict]:
 
 
 async def _handle_device_status(payload: dict) -> Optional[dict]:  # noqa: ARG001
-    """``device.status`` —— M2 未实现时如实说「没连」，**不假装**。
+    """``device.status`` —— M2 已实装：真实探测并回报。
 
-    这里刻意不做「自动去探测设备」：那会 import 设备层，
-    把 :mod:`vrun.ipc` 拖进 pymobiledevice3 的依赖里（M1 的分层纪律，见 §11）。
+    ⚠️ 分层纪律的关键动作在这里：设备层的 import 放在**函数体内**，
+    不是模块顶层。这样 ``import vrun.ipc``（进而 ``vrun serve``）
+    **不会**把 pymobiledevice3 拖进来 —— 没插手机时侧车照样能起，
+    面板的数学仍然完全可用（works.md §5.7）。
+    ``tests/test_device.py::test_pure_layer_never_imports_pymobiledevice3``
+    是这条纪律的回归护栏。
     """
-    return event(EV_DEVICE, connected=False, ddi_mounted=False,
-                 streaming=False, error="设备层（M2）尚未实现")
+    try:
+        from .device import DeviceBridge
+    except ImportError as exc:
+        return event(EV_DEVICE, connected=False, ddi_mounted=False,
+                     tunnel_up=False, phase="disconnected",
+                     error=f"设备层不可用：{exc}")
+
+    bridge = _shared_bridge()
+    try:
+        await bridge.connect()
+    except Exception as exc:
+        # ★ 探测失败**不算协议错误**：GUI 需要看到「没连 + 为什么」，
+        #   而不是收到一个 exception 事件。状态查询失败是常态，不是故障。
+        return event(EV_DEVICE, connected=False, ddi_mounted=False,
+                     tunnel_up=False, phase=bridge.status().phase,
+                     device_name=bridge.status().device_name,
+                     injected=bridge.status().injected,
+                     dropped=bridge.status().dropped,
+                     error=str(exc))
+    return event(EV_DEVICE, **bridge.status().as_event())
+
+
+async def _handle_device_cleanup(payload: dict) -> Optional[dict]:  # noqa: ARG001
+    """``device.cleanup`` —— M2 已实装：立即清除虚拟定位。
+
+    走 :class:`vrun.safety.SafetyGuard` 而不是直接 ``bridge.clear()``：
+    幂等标记位是唯一的真相源，否则 GUI 每次启动都发一次 cleanup
+    就会对着设备反复清。
+    """
+    try:
+        from .device import DeviceBridge
+        from .safety import SafetyGuard
+    except ImportError as exc:
+        raise ProtocolError(ERR_NOT_IMPLEMENTED,
+                            f"设备层不可用：{exc}",
+                            "确认已安装 pymobiledevice3。") from exc
+
+    bridge = _shared_bridge()
+    try:
+        await bridge.connect()
+    except Exception as exc:
+        # 连不上 = 没有通道 = 没有位置可清，如实回报即可
+        return event(EV_DEVICE, connected=False, tunnel_up=False,
+                     phase=bridge.status().phase, cleared=False,
+                     error=f"连不上设备，未执行清除：{exc}")
+
+    guard = SafetyGuard(bridge)
+    cleared = await guard.acleanup()
+    return event(EV_DEVICE, cleared=cleared, **bridge.status().as_event())
+
+
+#: 侧车进程内的**单一**设备桥与**单一**会话。
+#:
+#: 为什么必须是单例：
+#:   ① 隧道是**进程级单例**（PyTCP 网络栈全局唯一），第二次建隧道会直接失败。
+#:   ② works.md §5.7 已锁定 —— 同一时刻只可能有一个会话，天然串行。
+_BRIDGE = None
+_SESSION = None
+
+
+def _shared_bridge():
+    global _BRIDGE
+    if _BRIDGE is None:
+        from .device import DeviceBridge
+
+        _BRIDGE = DeviceBridge()
+    return _BRIDGE
+
+
+def reset_shared_state() -> None:
+    """清空进程内的单例桥与单例会话。**测试专用。**
+
+    为什么需要它
+        隧道是**进程级单例**（PyTCP 网络栈全局唯一）。测试里若让
+        ``device.status`` 真的去连真机，会① 依赖「手机在不在」，
+        ② 建完隧道又被下一条用例抢走，表现为**随机卡死**。
+
+        所以设备层的单测一律先注入假 bridge（``_BRIDGE = FakeBridge()``），
+        跑完调本函数还原 —— 测试之间彻底不共享设备状态。
+    """
+    global _BRIDGE, _SESSION
+    _BRIDGE = None
+    _SESSION = None
+
+
+def _shared_session(emit):
+    global _SESSION
+    if _SESSION is None:
+        from .session import RunSession
+
+        _SESSION = RunSession(bridge=_shared_bridge(), emit=emit)
+    return _SESSION
+
+
+# ── run.* —— M2 实装 ──────────────────────────────────────
+#
+# emit 由 serve() 注入：把事件写成一行 JSON 推给 GUI。
+# 「每行 flush」是硬要求（§4.3）—— 不 flush 会让 tick 在管道里攒满 4 KB
+# 才吐出来，GUI 上的表现是「按了开始以后两分钟才开始动」。
+
+async def _emit_event(name: str, payload: dict, out=None) -> None:
+    stream = out if out is not None else _OUT_STREAM[0]
+    if stream is None:
+        return
+    write_message(stream, event(name, **payload))
+
+
+#: serve() 把输出流挂在这里。模块级单槽位，不是全局可变状态满天飞。
+_OUT_STREAM: list = [None]
+
+
+async def _handle_route_set(payload: dict) -> Optional[dict]:
+    points = payload.get("points")
+    if not isinstance(points, list):
+        raise ProtocolError(ERR_BAD_ARGS, "route.set 需要 `points` 数组",
+                            "格式：{\"command\":\"route.set\",\"points\":[[lat,lon],…]}")
+    try:
+        sess = _shared_session(_make_emitter())
+        sess.set_route(points)
+    except Exception as exc:
+        raise ProtocolError(ERR_BAD_ARGS, str(exc),
+                            "路线至少 2 个点，且必须先 stop/cleanup。") from exc
+    return event(EV_PROGRESS, route_points=len(points))
+
+
+async def _handle_run_prepare(payload: dict) -> Optional[dict]:
+    sess = _shared_session(_make_emitter())
+    try:
+        return event(EV_PROGRESS, **(await sess.prepare()))
+    except Exception as exc:
+        raise ProtocolError(ERR_BAD_ARGS, str(exc),
+                            "先发 route.set 再发 run.prepare。") from exc
+
+
+async def _handle_run_start(payload: dict) -> Optional[dict]:
+    sess = _shared_session(_make_emitter())
+    try:
+        _apply_config(sess, payload)
+    except Exception as exc:
+        raise ProtocolError(ERR_BAD_ARGS, str(exc)) from exc
+    try:
+        return event(EV_PROGRESS, **(await sess.start()))
+    except Exception as exc:
+        raise ProtocolError(ERR_BAD_ARGS, str(exc),
+                            "必须先 run.prepare 再 run.start。") from exc
+
+
+async def _handle_run_pause(payload: dict) -> Optional[dict]:  # noqa: ARG001
+    sess = _shared_session(_make_emitter())
+    try:
+        return event(EV_PROGRESS, **(await sess.pause()))
+    except Exception as exc:
+        raise ProtocolError(ERR_BAD_ARGS, str(exc)) from exc
+
+
+async def _handle_run_resume(payload: dict) -> Optional[dict]:  # noqa: ARG001
+    sess = _shared_session(_make_emitter())
+    try:
+        return event(EV_PROGRESS, **(await sess.resume()))
+    except Exception as exc:
+        raise ProtocolError(ERR_BAD_ARGS, str(exc)) from exc
+
+
+async def _handle_run_stop(payload: dict) -> Optional[dict]:  # noqa: ARG001
+    sess = _shared_session(_make_emitter())
+    try:
+        return event(EV_PROGRESS, **(await sess.stop()))
+    except Exception as exc:
+        raise ProtocolError(ERR_BAD_ARGS, str(exc)) from exc
+
+
+def _make_emitter():
+    async def emit(name: str, payload: dict) -> None:
+        await _emit_event(name, payload)
+    return emit
+
+
+def _apply_config(sess, payload: dict) -> None:
+    """把 ``run.start`` 的载荷套到会话上。"""
+    from .noise import GPSNoise
+    from .profile import SpeedProfile
+
+    kwargs: dict = {}
+    if "profile" in payload and isinstance(payload["profile"], dict):
+        raw = payload["profile"]
+        allowed = {"t_w", "r0", "delta", "f", "sigma_v", "tau_v", "clamp_enabled"}
+        filtered = {k: v for k, v in raw.items() if k in allowed}
+        kwargs["profile"] = SpeedProfile(**filtered) if filtered else SpeedProfile()
+
+    if "noise" in payload:
+        level = payload["noise"]
+        rate = float(payload.get("sample_rate", 1.0) or 1.0)
+        try:
+            kwargs["noise"] = GPSNoise(level=level, sample_rate=rate,
+                                       seed=int(payload.get("seed", 0) or 0))
+        except Exception as exc:
+            raise ProtocolError(ERR_BAD_ARGS, f"noise 参数非法：{exc}") from exc
+    if "sample_rate" in payload:
+        kwargs["sample_rate"] = float(payload["sample_rate"])
+    sess.configure(**kwargs)
 
 
 def _make_unavailable(name: str, milestone: str = "M2") -> Handler:
@@ -233,13 +435,13 @@ def _make_unavailable(name: str, milestone: str = "M2") -> Handler:
 HANDLERS: dict[str, Handler] = {
     CMD_ESTIMATE: _handle_estimate,
     CMD_DEVICE_STATUS: _handle_device_status,
-    CMD_ROUTE_SET: _make_unavailable(CMD_ROUTE_SET),
-    CMD_RUN_PREPARE: _make_unavailable(CMD_RUN_PREPARE),
-    CMD_RUN_START: _make_unavailable(CMD_RUN_START),
-    CMD_RUN_PAUSE: _make_unavailable(CMD_RUN_PAUSE),
-    CMD_RUN_RESUME: _make_unavailable(CMD_RUN_RESUME),
-    CMD_RUN_STOP: _make_unavailable(CMD_RUN_STOP),
-    CMD_DEVICE_CLEANUP: _make_unavailable(CMD_DEVICE_CLEANUP),
+    CMD_ROUTE_SET: _handle_route_set,
+    CMD_RUN_PREPARE: _handle_run_prepare,
+    CMD_RUN_START: _handle_run_start,
+    CMD_RUN_PAUSE: _handle_run_pause,
+    CMD_RUN_RESUME: _handle_run_resume,
+    CMD_RUN_STOP: _handle_run_stop,
+    CMD_DEVICE_CLEANUP: _handle_device_cleanup,
 }
 
 
@@ -284,6 +486,9 @@ async def serve(
     """
     stdin = stdin if stdin is not None else sys.stdin
     stdout = stdout if stdout is not None else sys.stdout
+    # 会话事件（tick / progress）要写到这里。必须挂上，
+    # 否则 run.start 之后 tick 全部丢进黑洞。
+    _OUT_STREAM[0] = stdout
 
     while True:
         try:

@@ -407,18 +407,22 @@ Virtual_Location_Software_For_Apple/
 │   ├── test_estimate.py             # ★ 配速 / ETA / 安全带
 │   ├── test_geo.py / test_route.py / test_profile.py
 │   ├── test_noise.py / test_engine.py
+│   ├── test_device.py               # ★ ① 纯计算层绝不 import pymobiledevice3
+│   ├── test_safety.py               # ★ 三保险幂等清理
+│   ├── test_session.py              # ★ 会话时序 / 背压 / 停止语义
 │   ├── test_env_resolution.py       # F7 回归：解释器解析必须可用
 │   └── golden/estimate.json         # ★ 两侧共享的基准值（防公式漂移）
 ├── scripts/
-│   ├── bootstrap_env.sh        # 建 conda 环境（全路径调用 conda）
 │   ├── resolve_python.sh       # ★ 解析解释器路径（F7；任何地方不许硬编码）
 │   ├── build_app.sh            # SwiftPM 构建 + 组装 .app
-│   ├── preflight.sh            # 设备前置检查
-│   └── panic-clear.sh          # 紧急清除模拟定位
+│   └── panic-clear.sh          # 紧急清除模拟定位（保险链最后一环，会被自动触发）
 ├── docs/                       # preflight.md / findings.md / file-manifest.md
 ├── probe/                      # ProbeApp.swift（M0 探针，约 30 行）
 └── logs/                       # 运行记录（gitignore）
 ```
+
+> ⚠️ v1 目录树里的 `bootstrap_env.sh` 与 `preflight.sh` **从未实现**，v5 已删除。
+> M0 的环境检查是手动做的，记录在 `docs/preflight.md` —— 一张表比两个脚本更好用。
 
 > 逐文件的职责、接口与里程碑，见 **`docs/file-manifest.md`**（本节目录树的展开版）。
 
@@ -660,7 +664,7 @@ environment.yml            ← conda 层：python 版本、conda 包
 - [x] `recorder.py`：CSV + GPX 落盘 + `summarize()` 统计（2026-10-12 补齐）
       —— GPX 不只是存档：`simulate-location play` 会读它并按 `<time>` 差值回放，
       于是「离线算的轨迹」与「真机注入的轨迹」**逐字节一致**。见 findings.md **F9**
-- [ ] `ipc.py`：JSON Lines 协议 —— **待建**（GUI 唯一会调的 `vrun serve` 依赖它）
+- [x] `ipc.py`：JSON Lines 协议 + `serve` 侧车循环（GUI 唯一会调的 `vrun serve` 依赖它）
 - [x] `cli.py`：`vrun estimate` / `golden` / `simulate`（**无设备也能跑**）
 - [x] 单元测试：投影往返误差 < 0.1 m、路线长度误差 < 0.5%、稳态速度误差 < 1%、clamp 生效、同种子输出逐字节一致、起步段不越界
 - [x] **★ `tests/golden/estimate.json`**：§5.4 全表落为基准数据，`test_estimate.py` 逐行断言
@@ -674,37 +678,96 @@ environment.yml            ← conda 层：python 版本、conda 包
 
 ### M2 · 设备桥（需要 iPhone）
 
-- [ ] `device.py`：封装 `LocationSimulation`（async context manager），连接 → 挂 DDI → 建隧道（macOS 优先 `--native`）→ `set` / `clear`
-- [ ] `safety.py`：三保险清理，含"清理已执行"标记位保证幂等
-- [ ] 会话时序：预置起点 → 静置 15 s → 开始推进 → 到达目标 → 停在终点
+- [x] `device.py`：封装 `LocationSimulation`（async context manager），连接 → 探测 DDI → 建隧道 → `set` / `clear`
+      —— ✅ 已落地。**API 是对 11.27.2 逐个核对过的**，不是凭记忆：
+      `set(latitude, longitude)` **只收经纬度两个参数**，
+      所以 M0 那条「`altitude` 恒为 0.00、`horizontalAccuracy` 恒为 5.0」在 API 层面得到解释 ——
+      上游根本没提供这两个入口。
+      隧道按上游 CLI 的降级链实现：macOS 先 native（免 root）→ 回落 userspace。
+      ⚠️ **隧道是进程级单例**（PyTCP 网络栈全局唯一，第二次建必然失败），
+      所以 ipc.py 里所有 `device.*` 命令共用**同一个** `_shared_bridge()`。
+- [x] `safety.py`：三保险清理，含"清理已执行"标记位保证幂等
+      —— ✅ 已落地（34 条单测）。三个设计决定值得记：
+      ① 标记位**先置位再清理**：反过来的话 clear 失败会触发三保险反复重试
+      ② signal / atexit 是**同步**上下文，而 `clear()` 是 async 且必须经主 loop 写出 ——
+         主 loop 已死时原通道必然失效，只能起短命子进程跑 `python -m vrun panic-clear`。
+         **这就是 `scripts/panic-clear.sh` 必须存在的真正原因**，
+         它不只是「手动救援脚本」，而是保险链的最后一环。
+      ③ 子进程必须显式传 `PYTHONPATH`（实测踩到：源码树下 `python -m vrun` 会
+         `No module named vrun`，而这恰恰是「崩了之后才跑」的场景）
+- [x] `scripts/panic-clear.sh` + CLI 的 `device-status` / `panic-clear` 实装
+      —— `device-status` **没插手机也返回 0**（它是状态查询不是操作，
+      非零会让 panic-clear 的调用链误判）
+- [x] ipc 的 `device.status` / `device.cleanup` 实装
+- [x] **★ 真机端到端验证通过**（2026-10-14 19:1x，iPhone 18,1 / iOS 27.0.1 / USB）
+      —— 6 点移动测试：天安门 → 南行 1.2 km → 折返，每点停 3 s。
+      **用户肉眼确认地图上蓝点跟着走了 6 段**，随后 `clear` 后定位恢复正常。
+      这是 M2 的**生死验证**：设备层不只是「按 API 写对了」，而是真的跑通了。
+      顺带修掉两个只在真机上才暴露的 bug（见下）
+- [x] 会话时序：预置起点 → 静置 15 s → 开始推进 → 到达目标 → 停在终点
+      —— ✅ `src/vrun/session.py` 已落地（23 条单测，不依赖 iPhone）。
+      状态机 `空闲→已预置⇄运行中⇄已暂停→已停止→已清理`，
+      `stop()` 与 `cleanup()` 语义分开（停止**保持**在终点供核对，
+      清理才清除位置）。
+      ★ 最关键的设计是**跨线程边界**：`TrackEngine.run()` 是同步阻塞的，
+      而一次会话 18 分钟，直接 await 会把事件循环堵死。解法三件套：
+        ① 引擎跑在 `asyncio.to_thread` 的工作线程上
+        ② `on_sample` 用 `run_coroutine_threadsafe(...).result(timeout)`
+           **同步等待注入完成** —— 这就是**背压**，没有它轨迹会和真实时间脱节
+        ③ 暂停/停止靠可中断的 `sleeper`（分小片轮询标志位），
+           整段 `time.sleep(gap)` 会让停止迟 1 s —— 而迟 1 s 就是**多注入一个点**
 - [ ] 异常恢复：USB 掉线、锁屏、DDI 卸载、单点 `set` 超时重试
+      —— 超时重试已在 `set_location` 里实现（默认 2 s / 2 次，有限重试）；
+      其余三项**必须真机才能验**。`dropped` 计数器已就位，供 M4 对账。
 - [ ] 端到端：真机跑一条 60 s 直线，观察 iPhone 地图沿直线移动
 - [ ] 实测 1 Hz 连续注入 10 分钟，统计丢失点数与延迟分布
+      —— `dropped` 计数器已就位（M4 对账用），但**长跑压测尚未做**。
+      6 点短测只证明了「能注入」，没证明「一小时内不漂、不漏」。
+- [x] **★ 测试绝不碰真机**（findings.md **F12**，2026-10-14）
+      —— 这条是**踩出来的**：`test_boundary_coordinates_accepted` 验的是
+      「±90/±180 不能误拒」，而 `set_location()` 是「先校验、再连接、再注入」，
+      **合法坐标会一路穿过校验闸门去连手机**。
+      症状是「随机」卡死：手机没插就秒过，插着就挂死 >60 s（真去建隧道）。
+      同一个套件一次 21 s 跑完、一次挂住，看起来像偶发抖动。
+      修法：护栏做在 **fixture 层**（`validation_only_bridge` 把 `connect()`
+      换成空实现 + 假注入器），而不是逐个测试人工检查 ——
+      那个副作用对调用方**不可见**，人工检查守不住。
+      ⚠️ 顺带核实（**结论：没问题**）：`device-status` 会调 `connect()`，
+      但 `DtxService.__aenter__` **只开 DTX 通道**，真正武装定位的是 `set`。
 
 ### M3 · macOS GUI（SwiftUI + MapKit）
 
-- [ ] `Package.swift` + 最小可运行 SwiftUI App（SwiftPM 构建，脚本组装 `.app`）
-- [ ] 地图定位到江安校区；点选绘制折线；**实时显示总长度**（决定能不能凑够 3 km）
-- [ ] 路线编辑：撤销、删点、按目标距离缩放 / 裁剪
-- [ ] **★ `SpeedPanel.swift`**：按 §5.1 布局实现滑块 + 配速 / ETA / 判定预期
-- [ ] **★ `PreviewMath.swift`**：§3.6 闭式解，拖动时 60 fps 即时反馈
-- [ ] **★ `SafetyBand.swift`**：§5.3 色带绘制，含"严苛档无安全带"的退化渲染
-- [ ] **★ 松手校验**：发 `estimate`，比对本地近似；差值 > 1 s 时高亮提示
-- [ ] **★ 映射开关**：配速线性（默认）/ 速度线性
-- [ ] 会话控制：预置位置 → 开始 → 暂停 → 停止 → 清理（含**紧急清理**按钮）
-- [ ] 运行中滑块锁定为只读（§5.7）
+- [x] `Package.swift` + 最小可运行 SwiftUI App（SwiftPM 构建，脚本组装 `.app`）
+- [x] 地图定位到江安校区；点选绘制折线；**实时显示总长度**（决定能不能凑够 3 km）
+- [x] 路线编辑：撤销、删点、按目标距离缩放 / 裁剪
+- [x] **★ `SpeedPanel.swift`**：按 §5.1 布局实现滑块 + 配速 / ETA / 判定预期
+- [x] **★ `PreviewMath.swift`**：§3.6 闭式解，拖动时 60 fps 即时反馈
+      —— 与 `tests/golden/estimate.json` 跨语言对齐，18 条 Swift 单测全绿
+- [x] **★ `SafetyBand.swift`**：§5.3 色带绘制，含"严苛档无安全带"的退化渲染
+- [x] **★ 松手校验**：发 `estimate`，比对本地近似；差值 > 1 s 时高亮提示
+- [x] **★ 映射开关**：配速线性（默认）/ 速度线性
+- [x] 会话控制：预置位置 → 开始 → 暂停 → 停止 → 清理（含**紧急清理**按钮）
+- [x] 运行中滑块锁定为只读（§5.7）
+      —— ✅ **M3 全部落地**（14 个文件 / 2620 行，commit `05fb220`），
+      随后修掉三个实测缺陷（滑块爆栈 / HUD 边距 / 侧栏按钮撞标题），
+      并落地 `build_app.sh`（`eeb8e3a`）。
 - [ ] 实时视图：地图当前位置、已走距离 / 用时 / 瞬时速度、表观速度抖动、日志
-- [ ] 与侧车的 JSON Lines 通信（断线重连、错误展示）
+- [x] 与侧车的 JSON Lines 通信（断线重连、错误展示）
+      —— `SidecarClient.swift` 已落地；解释器路径经 `resolve_python.sh` 解析（F7），
+      **不硬编码**任何 python 绝对路径
 
 ### M4 · 冒烟验证与实测记录
 
 见 §7 的清单，逐条执行并把结果写进 `docs/findings.md`。
 
-- [ ] 离线 golden tests 全绿
+- [x] 离线 golden tests 全绿 —— Python **293 passed** / Swift **18 passed**
 - [ ] 真机跑一次 3 km @ 10.0 km/h，比对预览 ETA 与日志实际用时（**要求差 < 2 s**）
+      —— ⚠️ **上次跑到 19 分半被打断**，需完整重跑 19 分 22 秒的 3.2 km 轨迹。
+      M1 的离线等效验证已过（ETA 差 1.15 s），但那是**假时钟**下的，不算数。
 - [ ] 清理可靠性演练（正常结束 / Ctrl-C / 强杀 GUI）
+      —— 三保险已单测覆盖（F11 的第 3 条），**真机强杀未验**
 - [ ] 记录校园 App 的计数与判定结果，和面板的「判定预期」逐条比对
-- [ ] 汇总 `docs/findings.md`
+- [x] 汇总 `docs/findings.md` —— F1–F12
 
 ### M5 · 打包与文档
 
@@ -722,7 +785,13 @@ environment.yml            ← conda 层：python 版本、conda 包
       swift test  --scratch-path /tmp/vrun-swift
       ```
       ⚠️ 症状有迷惑性：报错发生在**代码编译完之后**，容易误判成代码问题。
-- [ ] `build_app.sh`：`swift build -c release` → 组装 `VRun.app`（Info.plist + 图标）
+- [x] `build_app.sh`：`swift build -c release` → 组装 `VRun.app`（Info.plist + 图标）
+      —— ✅ 已落地（`eeb8e3a`）。⭐ 但它的意义远大于「打包」：
+      **开发态必须走 `.app`，不能跑裸可执行文件**（2026-10-13 实测）——
+      裸可执行文件没有 bundle identifier，会连带出三个症状，
+      且**每一个都容易被误判成 GUI 代码写坏了**：
+      Dock 无图标 / **窗口无法置前**（`AXRaise`、`set frontmost` 全部静默失败）/ 菜单栏是别的 app 的。
+      详见 `docs/file-manifest.md` §5.2
 - [ ] App 通过绝对路径调用 conda 环境的 python 启动侧车（不追求完全自包含，可靠性优先）
 - [ ] `works.md` / `README.md` 定稿：架构、协议、参数含义、滑块面板使用说明、故障排查
 

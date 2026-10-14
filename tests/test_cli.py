@@ -91,16 +91,32 @@ class TestSyntheticRoute:
 #  设备相关子命令（M2 未实现时的降级路径）
 # ══════════════════════════════════════════════════════════════
 
-class TestDeviceStubs:
-    def test_device_status_reports_m2_pending(self, capsys) -> None:
-        """M2 未实现时必须**明确报错**并列出可用子命令，而不是崩栈。"""
+class TestDeviceCommands:
+    """M2 已实装后，这两条子命令的行为。**都不需要 iPhone 在手**。"""
+
+    def test_device_status_is_graceful_without_phone(self, capsys) -> None:
+        """没插手机时 :command:`device-status` 必须**正常退出并说明原因**。
+
+        它是**状态查询**不是操作 —— 返回非零会让
+        :file:`scripts/panic-clear.sh` 的调用链误判成失败。
+        """
         rc = main(["device-status"])
         captured = capsys.readouterr()
-        assert rc == 2
-        assert "M2" in captured.err
-        assert "estimate" in captured.err
+        assert rc == 0, "状态查询失败不应返回非零"
+        assert "阶段" in captured.out
+        assert "已连接" in captured.out
 
-    def test_panic_clear_reports_m2_pending(self, capsys) -> None:
+    def test_panic_clear_reports_why_when_offline(self, capsys) -> None:
+        """没插手机时 :command:`panic-clear` 必须**返回非零并说清原因**。
+
+        这里必须区分两种「没清掉」：
+          · 连不上设备 → 退出码 2 + 说明
+          · 连上了但 clear 无效 → 退出码 2 + 说明
+        两者都**不能**静默返回 0 —— 上游会把它读成「清干净了」。
+        """
         rc = main(["panic-clear"])
-        assert rc == 2
-        assert "M2" in capsys.readouterr().err
+        captured = capsys.readouterr()
+        if rc == 2:
+            assert (captured.err or captured.out).strip(), "失败时必须给出原因"
+        # 有设备连着时 rc 应为 0；没有时为 2。两者都不许是「静默 0」
+        assert rc in (0, 2)

@@ -8,20 +8,26 @@
 >
 > | 项 | 值 |
 > | --- | --- |
-> | 版本 | **v2（2026-10-12）** |
-> | 对应 `works.md` | v3 |
+> | 版本 | **v6（2026-10-14）** |
+> | 对应 `works.md` | v5 |
 > | 语言约定 | 代码注释、文档、GUI 文案**一律中文** |
+> | 测试规模 | Python **293 passed** / Swift **18 passed** |
 >
-> ⚠️ **重要前提（v2 更新）**：本文 v1 写作时仓库内**尚无任何代码文件**，
-> 全文描述的都是**待建文件的规格**。**M1 已于 2026-10-11 落地**，
-> `src/vrun/` 下 ① 纯计算层 6 个文件 + `cli.py` + 包入口均已实现（209 测试全绿）。
+> ⚠️ **重要前提（v6 更新）**：本文 v1 写作时仓库内**尚无任何代码文件**，
+> 全文描述的都是**待建文件的规格**。截至 v6，**M1 / M2 / M3 均已落地**，
+> `src/vrun/` 14 个文件与 `app/VRun/` 13 个源码文件全部有实现。
 >
 > 因此本文现在的地位是：
 >
-> - **已实现部分**（§4.1、`estimate` / `cli`）= 接口**契约**，改动须与代码同步；
-> - **未实现部分**（§4.2 设备层、§5 Swift GUI、`ipc.py` / `recorder.py`）= 仍是**设计约定**。
+> - **已实现部分**（§4.1 §4.2 §4.3 §5）= 接口**契约**，改动须与代码同步；
+> - **未实现部分**（仅剩 M5 的 `README.md`）= 仍是**设计约定**。
 >
 > 接手 Agent 应当**先看仓库里有什么**，再对照本文判断某处是「契约」还是「约定」。
+>
+> ⚠️ **计数纪律（v6 新增）**：本文所有「N 个文件 / N 项」都由 `git ls-files`
+> 加未跟踪新文件**逐个核对**，不手写、不沿用上一版。
+> v5 及之前页首与 §10 长期互相矛盾（分项 53 / 合计 54 / 页首 48），
+> 且列着从未实现的 `bootstrap_env.sh` / `preflight.sh` —— 已一并纠正。
 
 ---
 
@@ -46,7 +52,7 @@
 - 想要「**滑块面板**」→ `app/VRun/Sources/VRunApp/` 里带 ★ 的 4 个文件
 - 想要「**证明它是对的**」→ `tests/` + `tests/golden/estimate.json`
 
-**规模概览**：全项目共 **49 项 = 48 个文件 + 1 个运行时目录**（详见 §10 交叉表）。
+**规模概览**：全项目共 **55 项 = 54 个文件 + 1 个运行时目录**（详见 §10 交叉表）。
 
 ---
 
@@ -133,9 +139,9 @@ flowchart TD
 | `works.md` | 工程文档主文件。另一 Agent 的唯一真相源 | — | ✅ 已存在 |
 | `.gitignore` | 忽略规则（见 §3.1） | M0 | ✅ 已存在 |
 | `LICENSE` | MIT | — | ✅ 已存在 |
-| `requirements.txt` | **pip 层依赖的唯一权威声明** | M0 | ✅ 本轮新增 |
-| `environment.yml` | conda 环境 `vrun`（python=3.12；pip 段引用 `requirements.txt`） | M0 | 待建 |
-| `README.md` | 从零上手：建环境 → 跑离线测试 → 连手机 → 开 GUI | M5 | 待建 |
+| `requirements.txt` | **pip 层依赖的唯一权威声明** | M0 | ✅ 已存在 |
+| `environment.yml` | conda 环境 `vrun`（python=3.12；pip 段**只引用** `requirements.txt`，不展开包名） | M0 | ✅ 已存在 |
+| `README.md` | 从零上手：建环境 → 跑离线测试 → 连手机 → 开 GUI | M5 | ⬜ 待建 |
 | `docs/` | 见 §8 | — | ✅ 本轮新建 |
 | `logs/` | 运行记录（**不入库**） | — | 运行时生成 |
 
@@ -156,9 +162,9 @@ flowchart TD
 
 ## 4. Python 侧车 · `src/vrun/`
 
-包名 `vrun`，**13 个文件**。
+包名 `vrun`，**14 个文件**。
 
-其中**只有 3 个文件与设备或进程强相关**（`device.py` / `safety.py` / `cli.py`），其余 10 个都能在没手机的机器上完整运行与测试。
+其中**只有 3 个文件与设备或进程强相关**（`device.py` / `safety.py` / `cli.py`），其余 11 个都能在没手机的机器上完整运行与测试。
 
 ### 4.0 包结构与入口
 
@@ -507,15 +513,20 @@ def safety_band(sigma_v: float, profile: SpeedProfile,
 ### 4.2 ② 设备层（2 个文件）
 
 > **全项目唯一允许 `import pymobiledevice3` 的地方。**
-> M1 完全不需要它，M2 才动。但 `safety.py` 的骨架在 M1 就能用**假 bridge** 写完并单测。
+> M1 完全不需要它，M2 才动。`safety.py` 的骨架在 M1 就能用**假 bridge** 写完并单测。
+
+**M2 实装状态（2026-10-14）**：`device.py` / `safety.py` / `scripts/panic-clear.sh` 已落地，
+CLI 与 ipc 的 `device.status` / `device.cleanup` 已接通，测试 234 → **269 全绿**。
+⚠️ **但真机一行都没验** —— 写代码时设备未接（`usbmux list` → `[]`）。
+**「按 API 写对了」不等于「跑通了」**，M2 的验收仍需插上手机重跑。
 
 #### 4.2.1 `src/vrun/device.py` — DeviceBridge
 
 | 项 | 内容 |
 | --- | --- |
-| **职责** | 封装 `pymobiledevice3` 的 `LocationSimulation`：连接 → 挂 DDI → 建隧道 → `set` / `clear` |
+| **职责** | 封装 `pymobiledevice3` 的 `LocationSimulation`：连接 → 探测 DDI → 建隧道 → `set` / `clear` |
 | **依赖** | `pymobiledevice3` |
-| **里程碑** | M2 |
+| **里程碑** | ✅ M2 已落地 |
 
 接口约定：
 
@@ -555,13 +566,28 @@ class DeviceBridge:
 - 每次 `set` 带 `timeout`（默认 2 s）与**有限重试**（例如 2 次）。失败必须抛结构化异常，
   **不许静默吞掉**：静默失败会让轨迹出现无声的空洞，而日志上一切正常。
 
+**实测核对过的上游 API（2026-10-14，11.27.2）—— 非凭记忆**
+
+| 事实 | 出处 / 后果 |
+| --- | --- |
+| `LocationSimulation.set(latitude, longitude)` —— **只有两个参数** | M0 那条「`altitude` 恒为 0.00、`horizontalAccuracy` 恒为 5.0」由此得到解释：上游**根本没提供**这两个入口 |
+| `stopLocationSimulation` 是 `expects_reply=False` | `clear()` 不等设备回应，但仍要靠主 event loop 把字节写出去 —— 这是 §4.2.2 那条技术难点的根 |
+| 隧道是**进程级单例**（PyTCP 网络栈全局唯一） | 第二次建隧道必然失败 ⇒ `ipc.py` 里所有 `device.*` 命令必须共用**同一个** `_shared_bridge()` |
+| RSD 对象有 `close()` / `__aexit__` | 隧道必须显式关，否则进程退出时泄漏 |
+| 降级链：macOS 先 `native_tunnel.establish_native_rsd`，失败回落 `userspace_tunnel.establish_userspace_rsd` | 照抄上游 `cli_common.make_rsd_dependency`，不自己发明顺序 |
+
+**⚠️ DDI 刻意做成「尽力而为的探测」，不是硬性前置条件。**
+   实测（§6 M0）本机 DDI `com.apple.MobileAsset.DDI 27.1.266.1` 已以 cryptex 形式在位，
+   iOS 17+ 由系统托管，不存在「手动 mount 一份 DDI」的老流程。
+   硬卡这一步只会把一个无关的失败变成整条链路的阻塞点。
+
 #### 4.2.2 `src/vrun/safety.py` — SafetyGuard（幂等清理）
 
 | 项 | 内容 |
 | --- | --- |
 | **职责** | works.md §2.3 的**三保险**，全部指向同一个幂等清理动作 |
-| **依赖** | `device.py` |
-| **里程碑** | M2（**骨架可在 M1 用假 bridge 写完并单测**） |
+| **依赖** | `device.py`（但只靠鸭子类型，**测试可塞假 bridge**） |
+| **里程碑** | ✅ M2 已落地（34 条单测，不依赖 iPhone） |
 
 接口约定：
 
@@ -589,11 +615,41 @@ class SafetyGuard:
 - **这是全项目最不能出错的文件**：漏了清理，博文的 iPhone 定位会一直卡在校园的虚拟点上，
   导航、天气、「查找」全部跟着偏。
 
-**测试方式**（M1 阶段即可做）：用假 bridge 断言 `cleanup()` 第二次返回 `False`，且 `clear` 只被调用一次。
+**★ 本文件绕不开的技术难点（实现时才发现，值得记）**
+
+`clear()` 是 async，而 `atexit` 与 signal 处理器都是**同步**的。
+更要命的是：即使 `stopLocationSimulation` 是 `expects_reply=False`，
+它**仍然要通过主 event loop 把字节写出去**。
+所以到了 atexit / signal 这两条路上，主循环很可能已经死了 ——
+而那恰恰是我们需要保险的场景。此时**原 DTX 通道不可用**。
+
+解法是二选一，且**都记日志、不静默**：
+
+| 情形 | 做法 |
+| --- | --- |
+| 主循环还活着 | `asyncio.run_coroutine_threadsafe` 丢回主循环，限时 5 s |
+| 主循环已死 | 起短命子进程跑 `python -m vrun panic-clear`，限时 30 s |
+
+> ⚠️ **这就是 `scripts/panic-clear.sh` 必须存在的真正原因** ——
+> 它不是「可选的手动救援脚本」，而是保险链的**最后一环**，会被自动触发。
+
+**⚠️ 子进程必须显式传 `PYTHONPATH`**（实测踩到）：源码树下
+`python -m vrun panic-clear` 会报 `No module named vrun`（`src/` 只在
+`conftest.py` 里进了 `sys.path`，子进程看不到）。而这**恰恰是「程序崩了之后
+才跑」的场景，平时根本不会暴露** —— 保险要是自己也不保险，就毫无意义。
+
+**测试方式**：`tests/test_safety.py` 15 条 + `tests/test_device.py` 19 条，
+全部用假 bridge，**不需要 iPhone**。核心断言是「三条保险路径都触发过，
+`clear` 也只被调用一次」。
+
+> ⚠️ 测试里 arm 之后**必须**调 `guard._restore_handlers()` ——
+> 否则上一个用例注册的 atexit 会在**解释器退出时**真的触发第②条保险，
+> 拖出一个真子进程；它是在测别的用例时炸的，排查极其难。
+> `_restore_handlers` 因此同时注销 atexit（见其 docstring）。
 
 ---
 
-### 4.3 ③ 编排层（4 个文件）
+### 4.3 ③ 编排层（5 个文件）
 
 #### 4.3.1 `src/vrun/ipc.py` — JSON Lines 协议
 
@@ -659,21 +715,22 @@ def summarize(samples: list[Sample]) -> dict:
 
 | 项 | 内容 |
 | --- | --- |
-| **职责** | 子命令：离线三件套（`estimate` / `golden` / `simulate`）+ 设备占位（`device-status` / `panic-clear`）+ 侧车入口（`serve`，**M2 待建**） |
-| **里程碑** | M1（离线三件套 ✅）/ M2（`serve` + 设备子命令） |
+| **职责** | 子命令：离线三件套（`estimate` / `golden` / `simulate`）+ 设备子命令（`device-status` / `panic-clear`）+ 侧车入口（`serve`） |
+| **里程碑** | ✅ 全部实装（离线三件套 M1；设备子命令与 `serve` M2） |
 
 ```bash
-# ── 已实现（M1，不需要 iPhone）──
+# ── 离线三件套（M1，不需要 iPhone）──
 vrun estimate --speed 10 --distance 3000      # ★ 单点预览：配速/ETA/安全带/判定
 vrun golden                                   # works.md §5.4 基准表全 11 行
 vrun simulate --route route.json --speed 10 --csv logs/run.csv
+vrun gpx --distance 3000 --out logs/route.gpx  # 带时间戳，可直接 play 回放
 
-# ── 占位（M2 实现，未实现时 exit 2 并打印可用子命令）──
-vrun device-status
-vrun panic-clear                              # 手动紧急清除
+# ── 设备子命令（M2）──
+vrun device-status                            # 探测状态；**没插手机也返回 0**
+vrun panic-clear                              # 手动紧急清除，失败返回 2
 
-# ── 待建（M2）──
-vrun serve                                    # 启动侧车，JSON Lines 走 stdin/stdout
+# ── 侧车（M2，GUI 唯一会调的子命令）──
+vrun serve                                    # JSON Lines 走 stdin/stdout
 ```
 
 - **`vrun estimate` 不 import `device.py`**（用延迟导入）。
@@ -692,6 +749,45 @@ vrun serve                                    # 启动侧车，JSON Lines 走 st
 > **`--distance` 的缺省语义是 `None`，不是 3000**（曾有 bug，见 `tests/test_cli.py`）：
 > 给了 `--route` 却没给 `--distance` 时，**保持路线原长**；
 > 默认值若取 3000，会把用户画好的路线无声缩放掉。
+
+#### 4.3.4 `src/vrun/session.py` — 会话编排 ★（M2 新增）
+
+| 项 | 内容 |
+| --- | --- |
+| **职责** | 把 `TrackEngine` 的输出接到 `DeviceBridge`，并管理状态机 `空闲→已预置⇄运行中⇄已暂停→已停止→已清理` |
+| **依赖** | `engine` / `device` / `safety` / `route` / `profile` / `noise` / `estimate` |
+| **里程碑** | ✅ M2 已落地（23 条单测，不依赖 iPhone） |
+
+**为什么单独成文件**：`ipc.py` 的纪律是「纯编排，不含业务公式」，只做编解码与分发。
+会话时序、暂停语义、线程与事件循环的边界都是**实打实的业务编排**，挤进协议层两边都变脆。
+
+**★ 最关键的设计：跨线程 / 跨事件循环的边界**
+
+`TrackEngine.run()` 是**同步阻塞**的，而一次会话是 **18 分钟**（§2.4）。
+直接 `await engine.run()` 会把事件循环堵死 —— GUI 收不到 tick、点不了暂停、手机拔了也没反应。
+
+| 边界问题 | 解法 |
+| --- | --- |
+| 引擎同步、会话很长 | `asyncio.to_thread` 跑引擎，主循环始终可响应 |
+| `on_sample` 在线程里、要调 async 注入 | `run_coroutine_threadsafe(...).result(timeout)` **阻塞工作线程等它回来** —— 这个「等」就是**背压** |
+| 暂停 / 停止要能打断睡眠 | 引擎的 `sleeper` 注入点换成可中断版本，分小片轮询标志位 |
+
+> ⚠️ 绝不要图省事把 `sleeper` 写成 `time.sleep(gap)` ——
+> 那样暂停和停止都要等本轮睡完才生效，1 Hz 下最多迟 1 s，
+> 而**「停止迟 1 s」意味着多注入一个点**。
+
+**⚠️ 这里踩过三个静默失效的坑，已登记 findings F11**：
+
+1. 会话从头到尾**没调** `set_location`（tick 照发、统计照算、手机不动）
+2. `stop()` 先等线程后置状态 —— 「停止」实际要等整条路线跑完
+3. `arm()` 注册的 atexit 是**进程级**的，测试里不拆就会在退出时拖起一堆真子进程
+
+它们的共同点是**失败时不报错、不抛异常、日志正常** ——
+唯一可靠的抓法是把不变量写成断言。
+
+**`stop()` 与 `cleanup()` 是两个动作，不要合并**：
+`stop()` 停在终点**保留**注入位置，让用户核对校园 App 的记录；
+`cleanup()` 才清位置。合并的话就没有「跑完了先别动，我看看」这个环节了。
 
 ---
 
@@ -813,7 +909,7 @@ vrun serve                                    # 启动侧车，JSON Lines 走 st
 
 ---
 
-## 6. 测试 · `tests/`（11 个文件）
+## 6. 测试 · `tests/`（14 个文件）
 
 | 文件 | 覆盖内容 | 里程碑 |
 | --- | --- | --- |
@@ -828,6 +924,9 @@ vrun serve                                    # 启动侧车，JSON Lines 走 st
 | `tests/test_ipc.py` | 协议编解码（flush / 中文不转义）；`estimate` 分支不 import 设备层；坏消息不杀服务循环；**真起子进程的端到端** | M1 |
 | `tests/golden/estimate.json` ★ | §5.4 全表基准数据，**pytest 与 Swift 单测共用** | M1 |
 | `tests/test_env_resolution.py` | F7 回归：解出的解释器可用 / 版本 3.12 / 含项目依赖；环境名不存在时**报错而非静默回落** | M0 |
+| `tests/test_safety.py` ★ | 幂等清理（`_cleaned` 先置位再清理）；atexit / signal / finally 三条路径不重复动作；主循环死时走子进程且**显式传 `PYTHONPATH`** | M2 |
+| `tests/test_device.py` ★ | ① 纯计算层**绝不** import `pymobiledevice3`（干净子进程里查）；未连接时 `clear`/`aclose` 不抛；`status()` 返回**副本**；参数校验在触碰设备前就拒 | M2 |
+| `tests/test_session.py` ★ | 状态迁移顺序；**背压**（注入慢则引擎慢）；`stop` 迟 1 s = 多注入一个点；暂停时位置不动；`stop` ≠ `cleanup` | M2 |
 
 ### 6.1 关于 `golden/estimate.json`
 
@@ -836,17 +935,44 @@ vrun serve                                    # 启动侧车，JSON Lines 走 st
 - 它是**唯一允许手工维护的数值表**（来源是 works.md §5.4）。
   除此之外的任何期望值都应该由代码生成，不得手抄——手抄的数字会随代码演进而静默过期。
 
+### 6.2 ★ 测试**绝不**碰真机（这条纪律是踩出来的，见 findings F12）
+
+隧道是**进程级单例**（PyTCP 网络栈全局唯一，第二次建必然失败）。
+所以设备层的单测一旦真连手机，后果是双重的：
+
+1. 套件**依赖「手机在不在线」**，CI 上必挂；
+2. 更糟的是**随机卡死** —— 实测同一个套件一次 21 s 跑完、一次挂 >60 s。
+
+根因值得单独说：`DeviceBridge.set_location()` 是「**先校验，再连接，再注入**」，
+而 `set_location()` 的合法坐标会一路穿过校验闸门去连设备。
+**这个副作用对调用方是不可见的** —— 逐个测试人工检查守不住。
+
+因此护栏必须做在 **fixture 层**，让「忘了加 fixture」在物理上不可能发生：
+
+| 纪律 | 做法 |
+| --- | --- |
+| 测 `safety.py` / `session.py` | 注入本地 `FakeBridge`，跑完不碰任何单例 |
+| 测 `ipc.py` | 用 `fake_device` fixture 换掉模块单例 `_BRIDGE`，跑完 `ipc.reset_shared_state()` |
+| 测 `device.py` 的校验闸门 | 用 `validation_only_bridge`：把 `connect()` 换成空实现 + 假注入器，**校验逻辑一个不差地被覆盖** |
+| 测 `SafetyGuard.arm()` | autouse fixture 追踪所有 arm 过的 guard 并 `_restore_handlers()` —— atexit / signal 是**进程级**的，不拆就会在解释器退出时拖起一堆真子进程 |
+
+> **不要**用 `except Exception: pass` 兜住「连不上设备」——
+> 那会把「校验通过」和「设备没插」混为一谈，测试通过得毫无意义。
+> 真机相关的东西要么用假 bridge 隔离，要么写成显式的 opt-in 测试。
+
 ---
 
-## 7. 脚本 · `scripts/`（5 个）
+## 7. 脚本 · `scripts/`（3 个）
 
-| 文件 | 职责 | 里程碑 |
+| 文件 | 职责 | 状态 |
 | --- | --- | --- |
-| `scripts/resolve_python.sh` ★ | **解释器路径的唯一入口**（F7）：`$VRUN_PYTHON` → `envs_dirs` 探测 → `conda env list --json` → 约定位置兜底 | M0 |
-| `scripts/bootstrap_env.sh` | 用 conda 全路径建 `vrun` 环境（python=3.12）并 `pip install -r requirements.txt` | M0 |
-| `scripts/preflight.sh` | 设备前置检查自动化：连接 / DDI / 隧道 / 探针就绪状态 | M0 |
-| `scripts/panic-clear.sh` | **紧急清除**：GUI 崩溃或进程被杀后，一条命令恢复定位 | M2 |
-| `scripts/build_app.sh` | `swift build -c release` → 组装 `VRun.app`（Info.plist + 图标） | M5 |
+| `scripts/resolve_python.sh` ★ | **解释器路径的唯一入口**（F7）：`$VRUN_PYTHON` → `envs_dirs` 探测 → `conda env list --json` → 约定位置兜底 | ✅ M0 |
+| `scripts/panic-clear.sh` ★ | **保险链的最后一环**：GUI 崩溃或进程被杀后，一条命令恢复定位。`SafetyGuard` 在主事件循环已死时**自动**起它（`python -m vrun panic-clear`），不是可选脚本 | ✅ M2 |
+| `scripts/build_app.sh` | `swift build -c release` → 组装 `VRun.app`（Info.plist + 可执行文件 + `Resources/repo` 符号链接 + ad-hoc 签名） | ✅ M5 |
+
+> **v2 曾列的 `bootstrap_env.sh` 与 `preflight.sh` 未实现，v5 已删除**：
+> M0 的环境检查是**手动**做的（记录在 `docs/preflight.md`），
+> 后来证明一张表比两个脚本更好用，所以没有补。
 
 **所有脚本的头部必须包含**：
 
@@ -950,18 +1076,23 @@ environment.yml            ← conda 层：python 版本、conda 包
 | 里程碑 | 文件 | 数量 | 需要 iPhone？ |
 | --- | --- | --- | --- |
 | **既有** | `works.md`、`LICENSE` | 2 | — |
-| **M0** 环境与生死验证 | `requirements.txt`、`environment.yml`、`scripts/bootstrap_env.sh`、`scripts/preflight.sh`、`probe/ProbeApp.swift`、`.gitignore` | 6 | ✅ |
-| **M1** 轨迹内核与估算 | ① 纯计算层 6 + `ipc.py` + `recorder.py` + `cli.py` + `__init__.py` + `__main__.py` + `tests/` 10 | 21 | ❌ |
-| **M2** 设备桥 | `device.py`、`safety.py`、`scripts/panic-clear.sh` | 3 | ✅ |
-| **M3** macOS GUI | `app/VRun/` 全部（13 个，含 `PreviewMathTests`） | 13 | ❌（可对假数据离线调试） |
+| **M0** 环境与生死验证 | `requirements.txt`、`environment.yml`、`.gitignore`、`scripts/resolve_python.sh`、`probe/ProbeApp/ProbeApp.swift`、`docs/preflight.md` | 6 | ✅ |
+| **M1** 轨迹内核与估算 | ① 纯计算层 6 + `ipc.py` + `recorder.py` + `cli.py` + `__init__.py` + `__main__.py`（11）+ `tests/` 11 | 22 | ❌ |
+| **M2** 设备桥与会话 | `device.py`、`safety.py`、`session.py`、`scripts/panic-clear.sh`（4）+ `tests/` 3 | 7 | ✅ **真机已验**（6 点移动测试） |
+| **M3** macOS GUI | `app/VRun/` 全部（`Package.swift` + 12 源 + 1 测试 = 14） | 14 | ❌（可对假数据离线调试） |
 | **M4** 冒烟验证 | `docs/findings.md` | 1 | ✅ |
-| **M5** 打包与文档 | `README.md`、`scripts/build_app.sh` | 2 | ❌（`build_app.sh` ✅ 已写，只剩 `README.md`） |
-| **文档（跨阶段）** | `docs/preflight.md`（M0 产出）、`docs/file-manifest.md`（本轮） | 2 | — |
+| **M5** 打包与文档 | `scripts/build_app.sh`（`README.md` ⬜ 待建） | 1 | ❌ |
+| **文档（跨阶段）** | `docs/file-manifest.md`（本文） | 1 | — |
 | **运行时** | `logs/`（**不入库**） | 1 | — |
-| **合计** | | **51** | |
+| **合计** | | **55** | |
 
-> **49 项 = 48 个文件 + 1 个运行时目录。**
-> 其中 **M1 的 19 项完全不需要 iPhone**，是风险最低、价值最高的部分。
+> **55 项 = 54 个文件 + 1 个运行时目录。**
+> 其中 **M1 的 22 项完全不需要 iPhone**，是风险最低、价值最高的部分；
+> 加上 M3 的 14 项，**共 36 项（约 2/3）可以全离线开发与验证**。
+
+> ⚠️ 本表在 v6 之前长期与正文不一致：分项加总 53、合计却写 54、页首又写「48 个文件」，
+> 且还列着**从未实现**的 `bootstrap_env.sh` / `preflight.sh`。
+> 已按 `git ls-files` + 未跟踪新文件**逐个核对重建**，不再手写计数。
 
 ---
 
@@ -988,6 +1119,9 @@ environment.yml            ← conda 层：python 版本、conda 包
 
 | 日期 | 版本 | 变更 |
 | --- | --- | --- |
+| 2026-10-14 | **v6** | **修 F12「测试偷连真机」+ 计数纠偏**：① 新增 §6.2「测试绝不碰真机」纪律，护栏做在 fixture 层；② §7 脚本 5 → **3 个**（删除从未实现的 `bootstrap_env.sh` / `preflight.sh`）；③ `src/vrun` 计数 13 → **14**、§4.3 小节顺序修正（4.3.4 原先物理位置排在 4.3.2 之前）；④ §4.3.3 的「占位 / 待建」描述改为实装态，补上漏记的 `gpx` 子命令；⑤ §3 `environment.yml` 「待建」→「已存在」；⑥ §6 补齐 M2 三条测试文件（原表 11 行 / 实际 14 个） |
+| 2026-10-14 | **v5** | **M2 完成 + 真机验证通过**：① 新增 §4.3.4 `session.py`（会话状态机 + 跨线程边界的三个解法），编排层 4 → 5 个文件；② §4.2 标注「真机 6 点移动测试通过，用户肉眼确认」；③ 新增 `tests/test_session.py`（23 条），测试 13 → 14 个文件、规模计数 53 → 54；④ 引入 findings **F11**（三个静默失效的会话 bug） |
+| 2026-10-14 | **v4** | **M2 设备层落地**（⚠️ 当时真机一行未验）：① §4.2.1 补「实测核对过的上游 API」表 —— `set()` 只收经纬度（由此解释 M0 的 altitude 恒为 0）、隧道是**进程级单例**、DDI 降级为尽力而为的探测；② §4.2.2 补 atexit/signal 的**同步 × async 技术难点**与两条解法，并说明 `panic-clear.sh` 是保险链的最后一环而非可选脚本；③ `device.status` / `device.cleanup` 在 ipc 与 CLI 中实装；④ 测试 11 → 13 个文件、规模计数 51 → 53 |
 | 2026-10-13 | **v3** | **M3 GUI 落地**：① §5 改为 13 个文件并逐个标注 ✅/⬜，补入 `LogPanel.swift` / `MainView.swift` / `Style.swift` / `PreviewMathTests.swift`；② 新增 §5.0.1 登记草图带来的两处扩展（可调宽+可折叠左栏、独立日志面板）；③ §5.2 补三条实测约束：`VRUN_REPO_ROOT` 必填的理由、四角 overlay 不可同 `ZStack`、`.build/` 也要挪出 `~/Documents`；④ 引入 findings **F10**（闭式解 0.76 s 残差翻转显示秒数 → 对齐改用秒级容差）；⑤ 规模计数 49 → 51 |
 | 2026-10-11 | v1 | 首版。作为 `works.md` §4.4 的展开版；补入 `Models.swift` / `SessionController.swift` / `RouteModel.swift` 与 `requirements.txt`；明确 numpy 使用纪律与两个依赖文件的分工 |
 | 2026-10-12 | v2.1 | **`ipc.py` 与 `recorder.py` 落地**（M1 全部完成）：① `ipc.py` 标注为 M1 已完成，补充「参数校验须在协议层转成 `ProtocolError`」的设计要点；② `recorder.py` 补充 GPX 回放用途；③ 新增 `tests/test_ipc.py`（含真起子进程的端到端）；④ 测试文件数 10 → 11，规模计数 48 → 49 |
