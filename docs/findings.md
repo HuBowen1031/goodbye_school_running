@@ -504,6 +504,95 @@ await self.connect()                     # ← ② 真正的硬件动作
 
 ---
 
+## F13 ★ 崩溃栈顶的符号**不是**真凶；纯逻辑测试对框架内部抛异常完全无能为力
+
+**涉及**：`app/VRun/Sources/VRunApp/RouteCanvas.swift`（`GreenDotAnnotationView`）、
+`app/VRun/Tests/VRunAppTests/GreenDotMapKitTests.swift`（新增）
+
+### 症状
+
+GUI 一改完就出现「点一下地图，进程 abort」。崩溃报告（`asiBacktraces`）逐帧是：
+
+```
+objc_exception_throw
+-[MKAnnotationView clusteringIdentifier]            ← 栈顶
+-[MKMapView addAnnotationRepresentation:allowAnimation:]
+-[MKAnnotationManager updateVisibleAnnotations]
+-[MKMapView _didChangeRegionMidstream:]
+-[MKMapView mapLayerDidChangeVisibleRegion]
+VectorKit -[VKMapCameraController _animateToPosition:…]
+-[MKMapView setCenterCoordinate:animated:]          ← 就是 updateNSView 里那一行
+RouteCanvas.updateNSView(_:context:)
+```
+
+主线程栈显示 `-[NSApplication _crashOnException:]`，没有任何 reason 字符串。
+
+在此之前，钢笔与绿圈一共有 **26 条测试，全绿**；编译零警告；加点数据全对；
+连 `animated: false` 都改过了。**三件事同时成立，进程照样死。**
+
+### 根因
+
+`canShowCallout = true`，而 `DeviceAnnotation` 没有 `title`：
+
+```
+<…DeviceAnnotation: 0x…> must implement title, or view must have a
+non-nil detailCalloutAccessoryView when canShowCallout is YES (NSGenericException)
+```
+
+MapKit 在把 annotation 装配成 view 时抛 ObjC 异常，没人接 ⇒ `abort()`。
+
+### 两次**错误**的归因（都记下来，因为它们各自都"有证据"）
+
+**其一：把栈顶符号当成了真凶。**
+`clusteringIdentifier` 正好是头文件里写着「留给子类实现」的属性，
+看着就是标准答案。于是去覆盖 getter。**但变异测试证明这是错的** ——
+把 getter 覆盖删掉、只留 `init` 里的 `clusteringIdentifier = nil`，5 条测试照样全绿。
+赋值本身就等于「实现」了这个属性。
+
+**其二：把崩溃归给了 `animated: true` 的定时器交错。**
+2026-10-14 早些时候把 `setCenter` / `setVisibleMapRect` 全改成 `animated: false`，
+理由写的是「动画期间 MapKit 在 `VKTimedAnimation` 定时器回调里重装配标注，
+与 SwiftUI 的下一轮 `updateNSView` 交错」。重读崩溃栈才发现：
+**即使 `animated: false`，`setCenter` 也是同步走完同一条链的**
+（`setCenterCoordinate:animated:` → `_animateToPosition:` → `mapLayerDidChangeVisibleRegion`
+→ `updateVisibleAnnotations`）。整套「定时器交错」的解释都不成立，
+无动画只是顺手绕开了另一条不稳定路径。
+
+顺带澄清一个被当成独立 bug 的现象：**「第 2 次加点不重绘」和这次闪退是同一个 bug**。
+第 1 次加点确实重绘了（日志可证 `MainView.body 求值 route=1`），
+紧接着 `updateNSView` 里的 `setCenter` 把进程带走 —— 于是第 2 次点击打在死进程上。
+前期为此折腾过 `@Published` 通知、`@MainActor` 隔离、观察链转发，
+方向全错：**先分清「界面没更新」和「进程已经没了」。**
+
+### 处置
+
+1. `canShowCallout = false`，去掉那个 `target: nil, action: nil` 的死按钮
+   （绿圈只是「起点」的视觉标记，本来也不需要交互）。
+2. 新增 `GreenDotMapKitTests.swift`：把绿圈**真塞进带窗口的 `MKMapView`**，
+   走一遍 `addAnnotation` + `setCenter`。
+3. 修正 `RouteCanvas.swift` 里三处**已经站不住的注释**（动画交错、必须覆盖 getter、崩溃栈顶符号）。
+   错误的原因比没有原因更贵 —— 它会把下一个人引到同一个坑里。
+
+### 两条测试纪律
+
+**其一：纯逻辑测试证明不了「框架会接受这个对象」。**
+点击判定、锚点取值、`@Published` 通知，全都是我们自己写的逻辑，
+而 abort 发生在 **MapKit 内部** —— 纯逻辑测试根本没有能力覆盖那一层。
+只要往 MapKit / AppKit 这类框架里塞对象，就必须有一条真把对象交给框架、
+让它走一遍内部装配路径的测试。
+
+**其二：XCTest 会把 abort 变成可捕获的异常，于是能拿到 reason。**
+裸跑只看到一个没有 reason 的 `abort`；放进测试里，MapKit 的原话直接印在失败信息上。
+**这正是「测试能问出框架为什么不接受」的唯一途径。**
+
+写这条集成测试时还踩了一个更隐蔽的坑，记在测试文件里：
+`MKMapView.delegate` 是 **`weak`**。写成 `map.delegate = Coordinator(...)`
+的话 Coordinator 当场析构 ⇒ MapKit 走默认路径 ⇒ **永不崩 ⇒ 测试假绿**。
+必须用局部强引用把它按在生命周期里。这条已经写成
+`test绿圈的view确实被MapKit取走过` 这条护栏测试常驻。
+
+---
+
 ## 汇总
 
 | 编号 | 类型 | 影响 | 处置 |
@@ -520,3 +609,4 @@ await self.connect()                     # ← ② 真正的硬件动作
 | F10 | 取整边界 | 闭式解 0.76 s 残差翻转显示秒数 | 秒级容差断言 + 回归锁定；GUI 行为不变 |
 | F11 | ★ **静默失效** | 会话从不注入；停止要等跑完；保险泄漏 | 三个都靠单测抓（真机 18 分钟也未必看得出）；见 F11 |
 | F12 | ★ **测试偷连真机** | 套件「随机」挂死（手机插着才复现） | fixture 层隔离硬件；见 F12 |
+| F13 | ★ **误判崩溃真凶** | 点一下即 abort；26 条纯逻辑测试全绿也拦不住 | 改 `canShowCallout`；新增真喂 MapKit 的集成测试；见 F13 |

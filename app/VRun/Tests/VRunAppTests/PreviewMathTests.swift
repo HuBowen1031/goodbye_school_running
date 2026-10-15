@@ -221,7 +221,8 @@ final class PreviewMathTests: XCTestCase {
     /// 不是走过场的断言。
     @MainActor
     func testSpeedSetterDoesNotRecurse() {
-        let s = SessionController(sidecar: SidecarClient(repoRoot: URL(fileURLWithPath: ".")))
+        let s = SessionController(sidecar: SidecarClient(repoRoot: URL(fileURLWithPath: ".")),
+                          route: RouteModel())
         // 模拟滑块被快速拖动：跑满 6.00 → 16.99 再来回两遍，共 2200 次写入。
         // 每一次都会走一遍 clamp —— 旧实现正是在这里无限递归。
         for _ in 0..<2 {
@@ -233,7 +234,8 @@ final class PreviewMathTests: XCTestCase {
     /// 夹紧不变式仍然成立（改成计算属性后不能丢）
     @MainActor
     func testSpeedSetterStillClamps() {
-        let s = SessionController(sidecar: SidecarClient(repoRoot: URL(fileURLWithPath: ".")))
+        let s = SessionController(sidecar: SidecarClient(repoRoot: URL(fileURLWithPath: ".")),
+                          route: RouteModel())
         s.speedKmh = -100;  XCTAssertEqual(s.speedKmh, Rules.vMin)
         s.speedKmh = 999;   XCTAssertEqual(s.speedKmh, Rules.vMax)
         s.speedKmh = 12.34; XCTAssertEqual(s.speedKmh, 12.34, accuracy: 1e-9)

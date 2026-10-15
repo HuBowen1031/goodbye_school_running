@@ -23,6 +23,27 @@ struct MainView: View {
     @StateObject private var session: SessionController
     @StateObject private var logStore = LogStore()
 
+    /// ★ 路线模型必须由 MainView **直接**持有，不能只挂在 SessionController 里。
+    ///
+    /// 2026-10-14 实测踩到：原先 `route` 是 `SessionController` 的一个 `let` 属性，
+    /// 于是 MainView 只观察 SessionController 的 `objectWillChange`，
+    /// **没有任何人在听 RouteModel 的**。
+    ///
+    /// 后果是点一下地图后 `route.points.count` 确实变成 1（日志可证），
+    /// 但界面**完全不重绘** —— HUD 永远显示「0 点」，
+    /// 绿圈也只在「碰巧因为别的原因重绘」时才出现。
+    ///
+    /// ★ 这个 bug 极其隐蔽：
+    ///   · 数据是对的，看日志一切正常
+    ///   · 编译零警告
+    ///   · 有时又「看起来能用」，所以极难归因
+    ///   而它和「地图点击没反应」「加点闪退」叠加在一起时，
+    ///     症状几乎一模一样 —— 全都指向「地图不响应」。
+    ///
+    /// 修法：RouteModel 提升为 MainView 的 @StateObject，
+    /// 再注入给 SessionController —— **两边都在观察它**。
+    @StateObject private var route: RouteModel
+
     @State private var sidebarWidth: CGFloat = 340
     @State private var sidebarVisible = true
     @State private var isPenActive = false
@@ -39,7 +60,11 @@ struct MainView: View {
     private static let trafficLightTrailing: CGFloat = 76
 
     init(sidecar: SidecarClient) {
-        _session = StateObject(wrappedValue: SessionController(sidecar: sidecar))
+        // 先建 route，再把**同一个实例**注入 SessionController ——
+        // 不能各建一个，否则界面和会话看到的是两份路线。
+        let r = RouteModel()
+        _route = StateObject(wrappedValue: r)
+        _session = StateObject(wrappedValue: SessionController(sidecar: sidecar, route: r))
     }
 
     var body: some View {
@@ -77,6 +102,13 @@ struct MainView: View {
 
     private var sidebar: some View {
         VStack(spacing: 10) {
+            // ★ 设备状态卡放在最上面：它决定「能不能开始画」，
+            //   埋在下面的话用户第一眼看不到，也就不会去按刷新。
+            GlassPanel(cornerRadius: 16) {
+                DeviceStatusCard(session: session)
+            }
+            .frame(height: deviceCardHeight)
+
             GlassPanel(cornerRadius: 16) {
                 SpeedPanel(session: session) { commitToSidecar() }
             }
@@ -94,6 +126,7 @@ struct MainView: View {
 
     private enum SidebarSlot { case panel }
     private func sidebarHeight(for slot: SidebarSlot) -> CGFloat { 430 }
+    private var deviceCardHeight: CGFloat { 92 }
 
     // ══════════════════════════════════════════════════════
     //  分隔条 —— 拖动调宽（草图：DK 可调面板）
@@ -132,12 +165,12 @@ struct MainView: View {
     private var mapArea: some View {
         RouteCanvas(
             isPenActive: isPenActive,
-            route: session.route,
+            route: route,
             onPick: { p in
-                session.route.add(p)
+                route.add(p)
                 log(.info, String(format: "加点 (%.6f, %.6f) · 共 %d 点 · %.0f m",
-                                  p.lat, p.lon, session.route.points.count,
-                                  session.route.totalLengthM))
+                                  p.lat, p.lon, route.points.count,
+                                  route.totalLengthM))
             }
         )
         .ignoresSafeArea()
@@ -157,14 +190,14 @@ struct MainView: View {
                 log(.info, isPenActive ? "钢笔已开启 —— 在地图上点击落点" : "钢笔已收起")
             }
             toolButton("arrow.uturn.backward", tip: "撤销上一个点") {
-                session.route.undo()
+                route.undo()
             }
             toolButton("checkmark", tip: "结束绘制") {
                 isPenActive = false
-                session.route.finish()
+                route.finish()
             }
             toolButton("trash", tip: "清空路线") {
-                session.route.clear()
+                route.clear()
             }
             Divider().frame(width: 18).opacity(0.4)
             toolButton("arrow.left.and.right", tip: "按目标距离缩放") {
@@ -190,7 +223,13 @@ struct MainView: View {
         .help(tip)
     }
 
-    /// 左上角提示：钢笔的用法 + 绿圈的含义
+    /// 左上角提示：钢笔的用法 + 起笔指引
+    ///
+    /// ★ 指引必须随设备状态改口（`user_found_problem.md` 第 1、2 条）
+    ///   · 连上手机 → 绿：「从 iPhone 当前位置起笔」（绿圈在设备位置）
+    ///   · 没连 / 没问过 → 红：「点一下地图作为起点」（绿圈会落在你点的第一点）
+    /// 原文案是一句无条件成立的「绿圈 = iPhone 当前位置，请从那里起笔」——
+    ///   手机没插时绿圈根本不会出现，用户照着做却**没法开始画**。
     private var mapHints: some View {
         VStack(alignment: .leading, spacing: 5) {
             if isPenActive {
@@ -199,14 +238,41 @@ struct MainView: View {
                     .padding(.horizontal, 8).padding(.vertical, 4)
                     .glassEffect(.regular.tint(.accentColor.opacity(0.3)), in: .capsule)
             }
-            if session.route.points.isEmpty {
-                Label("绿圈 = iPhone 当前位置，请从那里起笔", systemImage: "mappin.circle")
+            if route.points.isEmpty {
+                let hint = startHint
+                Label(hint.text, systemImage: hint.icon)
                     .font(.system(size: 10))
                     .padding(.horizontal, 8).padding(.vertical, 4)
-                    .glassEffect(.regular.tint(.safeGreen.opacity(0.3)), in: .capsule)
+                    .glassEffect(.regular.tint(hint.color.opacity(0.3)), in: .capsule)
             }
         }
         .padding(12)
+    }
+
+    private struct StartHint {
+        let text: String
+        let icon: String
+        let color: Color
+    }
+
+    /// 起笔指引。三种情形 —— 别把它们合并成一句，
+    /// 「没问过」和「问了、没有」对用户是完全不同的处境。
+    private var startHint: StartHint {
+        if session.deviceConnected, route.deviceLocation != nil {
+            return StartHint(text: "绿圈 = iPhone 当前上报位置，从那里起笔",
+                             icon: "mappin.circle", color: .safeGreen)
+        }
+        if !session.hasQueriedDevice {
+            return StartHint(text: "尚未检测设备 —— 点一下地图作为起点，插上手机后到左侧刷新",
+                             icon: "iphone.slash", color: .warnYellow)
+        }
+        if session.deviceConnected {
+            // 连上了但还没注入过：绿圈此刻在用户点上，这是正常的起步方式
+            return StartHint(text: "尚未注入位置 —— 点一下地图作为起点（绿圈即起点）",
+                             icon: "mappin.circle", color: .warnYellow)
+        }
+        return StartHint(text: "未检测到 iPhone —— 点一下地图作为起点，插上后到左侧点「刷新」",
+                         icon: "iphone.slash", color: .riskRed)
     }
 
     /// 草图右下角：调用 vrun 的小面板，简要说明状态和进度
@@ -225,9 +291,12 @@ struct MainView: View {
                     .foregroundStyle(sidecarDot)
             }
             Divider().opacity(0.35)
+            KV(k: "设备", v: deviceHUDText,
+               color: session.deviceConnected ? Color.safeGreen
+                      : (session.hasQueriedDevice ? Color.riskRed : .secondary))
             KV(k: "路线", v: String(format: "%d 点 · %.0f m",
-                                   session.route.points.count, session.route.totalLengthM),
-               color: session.route.isRoutable ? .primary : .secondary)
+                                    route.points.count, route.totalLengthM),
+               color: route.isRoutable ? .primary : .secondary)
             KV(k: "目标", v: String(format: "%.2f km @ %.1f km/h",
                                    session.targetDistanceM / 1000, session.speedKmh), color: .primary)
             KV(k: "预计", v: session.exact?.etaStr ?? PreviewMath.durationText(
@@ -249,6 +318,14 @@ struct MainView: View {
         case .prepared: return .warnYellow
         default: return .secondary
         }
+    }
+
+    /// HUD 里的设备一行。三种说法要分开 —— 同上，别混。
+    private var deviceHUDText: String {
+        if session.isRefreshingDevice { return "检测中…" }
+        if session.deviceConnected { return session.deviceName ?? "已连接" }
+        if session.hasQueriedDevice { return "未连接" }
+        return "尚未检测"
     }
 
     // ══════════════════════════════════════════════════════
@@ -297,10 +374,10 @@ struct MainView: View {
     }
 
     private func scaleToTarget() {
-        guard session.route.scaled(to: session.targetDistanceM) else {
+        guard route.scaled(to: session.targetDistanceM) else {
             log(.warn, "点数不足，无法缩放（至少 2 个点）"); return
         }
-        log(.success, String(format: "路线已缩放到 %.0f m", session.route.totalLengthM))
+        log(.success, String(format: "路线已缩放到 %.0f m", route.totalLengthM))
     }
 
     private func log(_ level: LogLevel, _ text: String) {

@@ -48,6 +48,24 @@
 > `vrun gpx` 离线算轨迹 + `simulate-location play` 回放，已实测跑通完整会话。
 > M2 的必要性因此从「能注入」降级为「能中途改参数（§5 滑块）」。
 
+**v6 修订（2026-10-15）—— GUI 按用户反馈改造，以及一次闪退的归因**
+
+- ✅ §5.1 起笔语义改为「**绿圈 = 路线起点**」（原来写死「iPhone 当前位置」）。
+      设备已连接且报过位置 → 落在设备位置；否则 → 落在**用户点下的第一个点**。
+      起笔提示随之改成三态（绿 / 黄「尚未注入」/ 红「未检测到 iPhone」）。
+      详见 `user_found_problem.md` 第 1 条。
+- ✅ §5.1 新增 **设备状态卡 + 刷新按钮**（侧栏顶部，断开时红色实心强调）。
+      「还没问过」与「问了、没有」必须分开说。详见 `user_found_problem.md` 第 2 条。
+- ✅ §4.2 `device-status` 事件载荷新增 `lat`/`lon`（**上次成功注入的位置**）。
+      失败的注入**绝不**更新绿圈 —— 设备根本没收到，记下来会让绿圈指向不存在的位置。
+- 🆕 新增 **F13**：点一下就 abort，真凶是 `canShowCallout = true` 而 annotation 没有 `title`。
+      崩溃栈顶的符号（`clusteringIdentifier`）**不是**真凶；26 条纯逻辑测试全绿也拦不住。
+      新增 `GreenDotMapKitTests.swift` —— 把绿圈**真塞进带窗口的 `MKMapView`**。
+      ⇒ **纯逻辑测试证明不了「框架会接受这个对象」**，见 findings.md F13。
+- 🆕 澄清一个被当成独立 bug 的现象：「第 2 次加点不重绘」与闪退**是同一个 bug**。
+      第 1 次加点重绘成功后，`updateNSView` 里的 `setCenter` 把进程带走了。
+      ⇒ 先分清「界面没更新」和「进程已经没了」，再动手改观察链。
+
 ---
 
 ## 0. 目标
@@ -760,7 +778,7 @@ environment.yml            ← conda 层：python 版本、conda 包
 
 见 §7 的清单，逐条执行并把结果写进 `docs/findings.md`。
 
-- [x] 离线 golden tests 全绿 —— Python **293 passed** / Swift **18 passed**
+- [x] 离线 golden tests 全绿 —— Python **298 passed** / Swift **55 passed**
 - [ ] 真机跑一次 3 km @ 10.0 km/h，比对预览 ETA 与日志实际用时（**要求差 < 2 s**）
       —— ⚠️ **上次跑到 19 分半被打断**，需完整重跑 19 分 22 秒的 3.2 km 轨迹。
       M1 的离线等效验证已过（ETA 差 1.15 s），但那是**假时钟**下的，不算数。

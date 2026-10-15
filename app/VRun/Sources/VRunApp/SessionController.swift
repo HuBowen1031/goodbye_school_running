@@ -71,24 +71,41 @@ final class SessionController: ObservableObject {
 
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var deviceConnected = false
+    /// 设备名（`iPhone 18,1` 之类）。未连接时为 nil。
+    @Published private(set) var deviceName: String?
+    /// 上一次 ``device.status`` 的错误文本，刷新失败时显示给用户。
+    @Published private(set) var deviceError: String?
+    /// ★ 刷新请求是否已发出但还没回来。用来转圈 + 禁用按钮，
+    ///    否则用户会连点、刷出一堆并发探测（隧道是**进程级单例**）。
+    @Published private(set) var isRefreshingDevice = false
+    /// 用户是否点过刷新。没点过时提示语不能说「未检测到」——
+    /// 那听起来像设备真的不在，而事实是**我们还没问过**。
+    @Published private(set) var hasQueriedDevice = false
+
     @Published private(set) var progressText = "尚未开始"
     @Published private(set) var tick: (t: Double, lat: Double, lon: Double, s: Double)?
 
     /// 运行中锁滑块（§5.7）。只读，不阻止越界设定，只负责如实预警。
     var isSpeedLocked: Bool { phase.isActive }
 
-    let route = RouteModel()
-    let sidecar: SidecarClient
+    let route: RouteModel
+let sidecar: SidecarClient
 
     /// 日志出口。MainView 把它接到自己的 LogStore 上 ——
     /// 侧车的消息**一律经过 SessionController** 再出去，
     /// 这样「侧车 → UI」只有一条路径，日志才不会漏。
     var logSink: ((LogEntry) -> Void)?
 
-    init(sidecar: SidecarClient) {
+    init(sidecar: SidecarClient, route: RouteModel) {
         self.sidecar = sidecar
+        self.route = route
         // 自己当自己的 delegate：少一层转发，状态也不会分裂成两份
         sidecar.delegate = self
+
+        // 打开界面就探一次。
+        // 设备是热插拔的，用户插上手机后界面不会自己变 ——
+        // 所以探一次只是把「首次状态」填上，之后仍靠用户点刷新按钮。
+        refreshDeviceStatus()
     }
 
     private func log(_ level: LogLevel, _ text: String) {
@@ -158,8 +175,56 @@ final class SessionController: ObservableObject {
 
     func apply(_ ev: SidecarEvent) {
         if ev.event == "device" {
+            // 每次收到 device 事件都收尾查询状态 ——
+            // 否则刷新按钮会一直转圈到超时，用户会以为按钮坏了。
+            hasQueriedDevice = true
+            finishDeviceQuery()
+
             deviceConnected = ev.connected ?? false
+            deviceName = ev.deviceName
+            deviceError = ev.error
+
+            // ★ 把设备位置同步给 RouteModel，绿圈才有东西可画。
+            //   `lat`/`lon` 必须**成对**才采信（见 SidecarEvent.location）。
+            route.deviceConnected = deviceConnected
+            route.deviceLocation = deviceConnected ? ev.location : nil
         }
+    }
+
+    // MARK: - 设备状态刷新
+
+    /// ★ 主动问一次侧车「iPhone 在不在」—— 用户新增的按钮。
+    ///
+    /// 为什么要这个按钮（`user_found_problem.md` 第 2 条）
+    ///     设备是**热插拔**的：用户没插手机时打开 GUI，
+    ///     侧车起来那一刻探测不到，之后插上线界面也不会自己变。
+    ///     没有这个入口，用户只能重启 GUI —— 而重启的代价比点一下大得多。
+    ///
+    /// ⚠️ 防连点是必须的，不只是为了 UI 观感：
+    ///     RSD 隧道是**进程级单例**，并发探测会互相打架。
+    ///     侧车那边共用同一个 bridge，重复 connect 会被去重，
+    ///     但按钮连点仍然会刷出一串无意义的请求与日志。
+    func refreshDeviceStatus() {
+        guard !isRefreshingDevice else { return }
+        isRefreshingDevice = true
+        sidecar.send(.deviceStatus())
+        // 侧车不回就永远转圈 ⇒ 必须有兜底。10 s 足够覆盖
+        // 「建隧道 + 开 DTX 通道」的真实耗时（M0 实测在 3 s 以内）。
+        refreshTimeoutTask?.cancel()
+        refreshTimeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.finishDeviceQuery(note: "设备状态查询超时（10 s）——试试拔插一次 USB，或看侧车日志")
+        }
+    }
+
+    private var refreshTimeoutTask: Task<Void, Never>?
+
+    private func finishDeviceQuery(note: String? = nil) {
+        refreshTimeoutTask?.cancel()
+        refreshTimeoutTask = nil
+        isRefreshingDevice = false
+        if let note { deviceError = note }
     }
 
     // MARK: - 会话控制

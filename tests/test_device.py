@@ -31,13 +31,17 @@ from vrun.device import (
 # ══════════════════════════════════════════════════════════════
 
 class _StubLocationSimulation:
-    """只提供 ``async set(lat, lon)`` 的假注入器。"""
+    """只提供 ``async set(lat, lon)`` 与 ``async clear()`` 的假注入器。"""
 
     def __init__(self) -> None:
         self.calls: list[tuple[float, float]] = []
+        self.clear_calls = 0
 
     async def set(self, lat: float, lon: float) -> None:
         self.calls.append((lat, lon))
+
+    async def clear(self) -> None:
+        self.clear_calls += 1
 
 
 @pytest.fixture
@@ -205,6 +209,68 @@ def test_status_as_event_shape():
         assert key in ev, f"事件缺字段 {key}"
     assert ev["injected"] == 120
     assert ev["dropped"] == 2
+
+
+def test_status_as_event_carries_last_injected_position():
+    """★ ``lat`` / ``lon`` 必须进事件载荷 —— GUI 的绿圈就靠它。
+
+    没有这两个键，Swift 侧 :class:`SidecarEvent` 解出来永远是 nil，
+    地图上的绿圈**永远不会出现**。症状是「绿点不见了」，
+    而失败点在 Python 与 Swift 两侧都看不出来。
+    """
+    st = DeviceStatus(connected=True, phase="ready", injected=3,
+                      lat=30.5535, lon=103.9910)
+    ev = st.as_event()
+    assert ev["lat"] == 30.5535
+    assert ev["lon"] == 103.9910
+
+
+def test_last_injected_position_is_unknown_before_any_set(validation_only_bridge):
+    """一次都没注入过时**不能**编一个坐标出来 —— 如实报 None。"""
+    assert validation_only_bridge.status().lat is None
+    assert validation_only_bridge.status().lon is None
+
+
+async def test_last_injected_position_follows_successful_sets(validation_only_bridge):
+    """绿圈必须跟着**最后成功注入**的那个点走。"""
+    bridge = validation_only_bridge
+    await bridge.set_location(30.5535, 103.9910)
+    assert (bridge.status().lat, bridge.status().lon) == (30.5535, 103.9910)
+
+    await bridge.set_location(30.5600, 104.0000)
+    assert (bridge.status().lat, bridge.status().lon) == (30.5600, 104.0000)
+
+
+async def test_failed_injection_does_not_move_last_injected_position(validation_only_bridge):
+    """★ 失败的注入**不许**更新绿圈。
+
+    设备根本没收到那个坐标，记下来会让绿圈指到一个手机上不存在的位置 ——
+    用户照着它画路线，起点就是错的。这类 bug 只有断言能挡住。
+    """
+    bridge = validation_only_bridge
+    await bridge.set_location(30.5535, 103.9910)
+    good = (bridge.status().lat, bridge.status().lon)
+
+    async def _boom(lat, lon):
+        raise RuntimeError("通道断了")
+
+    bridge.stub.set = _boom
+    with pytest.raises(InjectionError):
+        await bridge.set_location(30.9, 104.9)
+
+    assert (bridge.status().lat, bridge.status().lon) == good, "失败的注入污染了绿圈"
+
+
+async def test_clear_resets_last_injected_position(validation_only_bridge):
+    """清理后设备回到真实 GPS，而真实位置读不到 —— 必须置空。"""
+    bridge = validation_only_bridge
+    await bridge.set_location(30.5535, 103.9910)
+    assert bridge.status().lat is not None
+
+    assert await bridge.clear() is True
+    assert bridge.stub.clear_calls == 1, "没真的发出 clear"
+    assert bridge.status().lat is None
+    assert bridge.status().lon is None
 
 
 def test_status_returns_a_copy_not_a_reference():

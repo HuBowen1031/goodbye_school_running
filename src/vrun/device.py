@@ -121,6 +121,21 @@ class DeviceStatus:
     #: 累计因失败而**跳过**的点数。非零说明轨迹有洞，必须能看见。
     dropped: int = 0
     error: Optional[str] = None
+    #: ★ 上一次**成功注入**的位置。GUI 地图上那个绿圈就画在这里。
+    #:
+    #: 为什么不给「iPhone 的真实 GPS」——
+    #:     pymobiledevice3 11.27.2 **没有读取设备定位的 API**
+    #:     （除注入方向外，全库无任何模块提及 latitude；
+    #:     `remote/core_device/location_service.py` 只列模拟场景，不读位置）。
+    #:
+    #: 而注入期间设备上报的位置**就是**我们给的那个坐标 ——
+    #:     所以「上次注入位置」在语义上恰好等于「iPhone 现在报的位置」。
+    #:     两者在「注入中」这一状态上是等价的，这正是绿圈需要的含义。
+    #:
+    #: ``clear()`` 之后置回 ``None``：此时设备回到了真实 GPS，
+    #: 而真实位置我们读不到，如实说「不知道」比编一个强。
+    lat: Optional[float] = None
+    lon: Optional[float] = None
 
     def as_event(self) -> dict:
         """转成 ``device`` 事件的载荷（与 ``ipc.EV_DEVICE`` 对齐）。"""
@@ -134,6 +149,8 @@ class DeviceStatus:
             "injected": self.injected,
             "dropped": self.dropped,
             "error": self.error,
+            "lat": self.lat,
+            "lon": self.lon,
         }
 
 
@@ -393,6 +410,11 @@ class DeviceBridge:
                     break
                 else:
                     self._status.injected += 1
+                    # ★ 记住最后成功注入的位置 —— GUI 的绿圈就靠它。
+                    #   只在**成功**时更新：失败的那次坐标设备根本没收到，
+                    #   记下来会让绿圈指到一个手机上不存在的位置。
+                    self._status.lat = lat
+                    self._status.lon = lon
                     return
 
         self._status.dropped += 1
@@ -419,6 +441,10 @@ class DeviceBridge:
         try:
             async with self._lock:
                 await asyncio.wait_for(self._loc.clear(), timeout=self.set_timeout)
+            # 清理后设备回到真实 GPS，而我们**读不到**真实位置。
+            # 如实置空 —— 让 GUI 把绿圈退回「由用户起笔」，好过指着一个假位置。
+            self._status.lat = None
+            self._status.lon = None
             log.info("已清除虚拟定位")
             return True
         except Exception as exc:

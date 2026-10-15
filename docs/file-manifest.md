@@ -8,14 +8,14 @@
 >
 > | 项 | 值 |
 > | --- | --- |
-> | 版本 | **v6（2026-10-14）** |
-> | 对应 `works.md` | v5 |
+> | 版本 | **v7（2026-10-15）** |
+> | 对应 `works.md` | v6 |
 > | 语言约定 | 代码注释、文档、GUI 文案**一律中文** |
-> | 测试规模 | Python **293 passed** / Swift **18 passed** |
+> | 测试规模 | Python **298 passed** / Swift **55 passed** |
 >
-> ⚠️ **重要前提（v6 更新）**：本文 v1 写作时仓库内**尚无任何代码文件**，
-> 全文描述的都是**待建文件的规格**。截至 v6，**M1 / M2 / M3 均已落地**，
-> `src/vrun/` 14 个文件与 `app/VRun/` 13 个源码文件全部有实现。
+> ⚠️ **重要前提（v7 更新）**：本文 v1 写作时仓库内**尚无任何代码文件**，
+> 全文描述的都是**待建文件的规格**。截至 v7，**M1 / M2 / M3 均已落地**，
+> `src/vrun/` 14 个文件与 `app/VRun/` 13 个源码文件全部有实现（`git ls-files` 逐个核对，v7 新增 `DeviceStatusCard.swift`）。
 >
 > 因此本文现在的地位是：
 >
@@ -24,7 +24,7 @@
 >
 > 接手 Agent 应当**先看仓库里有什么**，再对照本文判断某处是「契约」还是「约定」。
 >
-> ⚠️ **计数纪律（v6 新增）**：本文所有「N 个文件 / N 项」都由 `git ls-files`
+> ⚠️ **计数纪律（v6 新增，v7 续用）**：本文所有「N 个文件 / N 项」都由 `git ls-files`
 > 加未跟踪新文件**逐个核对**，不手写、不沿用上一版。
 > v5 及之前页首与 §10 长期互相矛盾（分项 53 / 合计 54 / 页首 48），
 > 且列着从未实现的 `bootstrap_env.sh` / `preflight.sh` —— 已一并纠正。
@@ -804,7 +804,7 @@ vrun serve                                    # JSON Lines 走 stdin/stdout
 | --- | --- | --- | --- |
 | `app/VRun/Package.swift` | SwiftPM 包定义：`swift-tools-version 6.2`、`platforms: [.macOS(.v26)]`、链接 MapKit + CoreLocation、可执行目标 `VRunApp` + 测试目标 `VRunAppTests` | M3 | ✅ |
 | `Sources/VRunApp/VRunApp.swift` | `@main` 入口；窗口装配；`locateRepoRoot()` 解析仓库根；启动时兜底 `device.cleanup` | M3 | ✅ |
-| `Sources/VRunApp/RouteCanvas.swift` | `MKMapView` 的 `NSViewRepresentable` 封装：钢笔点选画折线、自绘绿圈起点提示（`GreenDotView`） | M3 | ✅ |
+| `Sources/VRunApp/RouteCanvas.swift` | `MKMapView` 的 `NSViewRepresentable` 封装：钢笔点选画折线、自绘绿圈起点提示（`GreenDotView`）。内含子类化 `PenMapView`（接管 mouseDown/Dragged/Up）与 `ClickPhase` 判定 | M3 | ✅ |
 | `Sources/VRunApp/RouteModel.swift` | 路线点集与编辑（加点、撤销、缩放、haversine 累计长度）；与绘制解耦 | M3 | ✅ |
 | `Sources/VRunApp/SpeedPanel.swift` ★ | works.md §5.1 面板：配速线性滑块 + 吸附点、距离/采样率/噪声选择器、读数、R1–R5 判定、漂移提示 | M3 | ✅ |
 | `Sources/VRunApp/PreviewMath.swift` ★ | §3.6 闭式解、§3.5 `sigmaApparent`、§5.3 安全带与三级判定、§5.2 滑块映射的 Swift 镜像 | M3 | ✅ |
@@ -815,7 +815,12 @@ vrun serve                                    # JSON Lines 走 stdin/stdout
 | `Sources/VRunApp/LogPanel.swift` + `LogStore` | 可滚动彩色日志、按天筛选、debug 开关、自动滚动 | M3 | ✅ |
 | `Sources/VRunApp/MainView.swift` | 窗口布局（依草图）：可拖宽左栏 + 右侧竖排钢笔工具栏 + 右下状态浮窗 + 四角 overlay | M3 | ✅ |
 | `Sources/VRunApp/Style.swift` | Liquid Glass 设计令牌、`GlassPanel` / `PanelHeader` / `Chip` / `KV` 组件 | M3 | ✅ |
-| `Tests/VRunAppTests/PreviewMathTests.swift` | **跨语言契约测试**：与 `tests/golden/estimate.json` 同源的 §5.4 基准表断言（16 条） | M3 | ✅ |
+| `Sources/VRunApp/DeviceStatusCard.swift` ★ | 侧栏顶部的设备状态卡：红/黄/绿三态圆点 + 强调色「刷新」按钮 + 失败原因详情（`user_found_problem.md` 第 2 条） | M3 | ✅ |
+| `Tests/VRunAppTests/PreviewMathTests.swift` | **跨语言契约测试**：与 `tests/golden/estimate.json` 同源的 §5.4 基准表断言（18 条） | M3 | ✅ |
+| `Tests/VRunAppTests/PenClickTests.swift` ★ | 钢笔点击判定（`ClickPhase` 纯逻辑，11 条）+ `GreenDotAnnotationView` 基本性质（2 条） | M3 | ✅ |
+| `Tests/VRunAppTests/StartAnchorTests.swift` ★ | `RouteModel.startAnchor(deviceConnected:)` 9 条 + `SidecarEvent` 扩展字段解码 5 条 | M3 | ✅ |
+| `Tests/VRunAppTests/RouteModelNotificationTests.swift` ★ | 证明 `@Published` 的 `objectWillChange` 每次都发（5 条）；用于**证伪**「观察链失效」的假设 | M3 | ✅ |
+| `Tests/VRunAppTests/GreenDotMapKitTests.swift` ★★ | **MapKit 真身集成测试**（5 条）：把绿圈塞进带窗口的 `MKMapView`，走 `addAnnotation` + `setCenter`。F13 的回归锁 —— 修复前会把 abort 变成可捕获的 `NSGenericException`，直接印出 MapKit 的 reason | M3 | ✅ |
 | `app/VRun/bundle/Info.plist` | 应用元信息（Bundle ID / 版本 / 最低系统版本） | M5 | ⬜ 未写（现由 `scripts/build_app.sh` 在组装时生成） |
 | `scripts/build_app.sh` | M5：组装 `VRun.app`（Info.plist + 可执行文件 + `Resources/repo` 符号链接 + ad-hoc 签名） | M5 | ✅ |
 
@@ -1122,6 +1127,7 @@ environment.yml            ← conda 层：python 版本、conda 包
 | 2026-10-14 | **v6** | **修 F12「测试偷连真机」+ 计数纠偏**：① 新增 §6.2「测试绝不碰真机」纪律，护栏做在 fixture 层；② §7 脚本 5 → **3 个**（删除从未实现的 `bootstrap_env.sh` / `preflight.sh`）；③ `src/vrun` 计数 13 → **14**、§4.3 小节顺序修正（4.3.4 原先物理位置排在 4.3.2 之前）；④ §4.3.3 的「占位 / 待建」描述改为实装态，补上漏记的 `gpx` 子命令；⑤ §3 `environment.yml` 「待建」→「已存在」；⑥ §6 补齐 M2 三条测试文件（原表 11 行 / 实际 14 个） |
 | 2026-10-14 | **v5** | **M2 完成 + 真机验证通过**：① 新增 §4.3.4 `session.py`（会话状态机 + 跨线程边界的三个解法），编排层 4 → 5 个文件；② §4.2 标注「真机 6 点移动测试通过，用户肉眼确认」；③ 新增 `tests/test_session.py`（23 条），测试 13 → 14 个文件、规模计数 53 → 54；④ 引入 findings **F11**（三个静默失效的会话 bug） |
 | 2026-10-14 | **v4** | **M2 设备层落地**（⚠️ 当时真机一行未验）：① §4.2.1 补「实测核对过的上游 API」表 —— `set()` 只收经纬度（由此解释 M0 的 altitude 恒为 0）、隧道是**进程级单例**、DDI 降级为尽力而为的探测；② §4.2.2 补 atexit/signal 的**同步 × async 技术难点**与两条解法，并说明 `panic-clear.sh` 是保险链的最后一环而非可选脚本；③ `device.status` / `device.cleanup` 在 ipc 与 CLI 中实装；④ 测试 11 → 13 个文件、规模计数 51 → 53 |
+| 2026-10-15 | **v7** | **M3 收口（GUI 改造 + F13）**：① 新增 `DeviceStatusCard.swift`（刷新按钮 + 三态提示，`user_found_problem.md` 第 2 条）；② `RouteModel.startAnchor` 把绿圈语义改为「路线起点」（第 1 条）；③ `Models.swift` 的 `SidecarEvent` 补 9 个字段（含成对的 `lat`/`lon`）；④ `MainView` 提升为 `@StateObject` 持有 `RouteModel`；⑤ §5 补入 4 个新测试文件，其中 `GreenDotMapKitTests` 是**首个真喂 MapKit 的集成测试**；⑥ 规模 18 → **55** Swift、293 → **298** Python；⑦ 引入 findings **F13**（崩溃栈顶符号不是真凶 + 纯逻辑测试的盲区） |
 | 2026-10-13 | **v3** | **M3 GUI 落地**：① §5 改为 13 个文件并逐个标注 ✅/⬜，补入 `LogPanel.swift` / `MainView.swift` / `Style.swift` / `PreviewMathTests.swift`；② 新增 §5.0.1 登记草图带来的两处扩展（可调宽+可折叠左栏、独立日志面板）；③ §5.2 补三条实测约束：`VRUN_REPO_ROOT` 必填的理由、四角 overlay 不可同 `ZStack`、`.build/` 也要挪出 `~/Documents`；④ 引入 findings **F10**（闭式解 0.76 s 残差翻转显示秒数 → 对齐改用秒级容差）；⑤ 规模计数 49 → 51 |
 | 2026-10-11 | v1 | 首版。作为 `works.md` §4.4 的展开版；补入 `Models.swift` / `SessionController.swift` / `RouteModel.swift` 与 `requirements.txt`；明确 numpy 使用纪律与两个依赖文件的分工 |
 | 2026-10-12 | v2.1 | **`ipc.py` 与 `recorder.py` 落地**（M1 全部完成）：① `ipc.py` 标注为 M1 已完成，补充「参数校验须在协议层转成 `ProtocolError`」的设计要点；② `recorder.py` 补充 GPX 回放用途；③ 新增 `tests/test_ipc.py`（含真起子进程的端到端）；④ 测试文件数 10 → 11，规模计数 48 → 49 |

@@ -27,8 +27,39 @@ final class RouteModel: ObservableObject {
     /// 钢笔是否处于「正在画」状态。
     @Published private(set) var isDrawing = false
 
-    /// iPhone 当前定位 —— 草图里那个绿圈的来源。
+    /// 设备上报的位置（= 上次注入点）。由 SessionController 从 `device` 事件写入。
     @Published var deviceLocation: GeoPoint?
+
+    /// 设备是否已连接。**绿点的取值依赖它**，见 :func:`startAnchor(deviceConnected:)`。
+    @Published var deviceConnected: Bool = false
+
+    // MARK: - 起点标记（绿圈）
+
+    /// ★ 绿圈画在哪 —— 一条**纯函数**，两种情形共用同一个视觉。
+    ///
+    /// 2026-10-14 用户指出（`user_found_problem.md` 第 1 条）：
+    /// 原规格是「以 iPhone 当前真实位置作为画图起点」，但设备没连时绿圈不会出现，
+    /// 用户却仍被要求「从这里起笔」——**根本没法开始画**。
+    ///
+    /// 现在统一成「绿圈 = 路线起点」：
+    ///
+    /// | 情形 | 绿圈位置 | 用户看到的提示 |
+    /// | --- | --- | --- |
+    /// | 设备已连接且报过位置 | 设备位置 | 绿：「从 iPhone 当前位置起笔」 |
+    /// | 设备未连接 / 位置未知 | **路线的第一个点** | 红：「未检测到 iPhone，点一下地图作为起点」 |
+    /// | 两者都没有 | 无（画布为空） | 红：「未检测到 iPhone，点一下地图作为起点」 |
+    ///
+    /// ★ 刻意不写成「设备没连就不画绿点」——
+    ///     那样用户点击之后没有任何锚点反馈，
+    ///     「我点的这个点到底算不算起点」会变得不确定。
+    ///     把第一个点标绿，等于用视觉直接回答了这个问题。
+    ///
+    /// - Parameter deviceConnected: 设备当前是否已连接。
+    /// - Returns: 绿圈应处的位置；`nil` 表示此刻不该画。
+    func startAnchor(deviceConnected: Bool) -> GeoPoint? {
+        if deviceConnected, let dev = deviceLocation { return dev }
+        return points.first
+    }
 
     // MARK: - 增删
 

@@ -154,6 +154,10 @@ enum SafetyColor: String {
 }
 
 /// 侧车发回的通用事件。
+///
+/// ⚠️ 字段名与 `src/vrun/device.py::DeviceStatus.as_event()` **逐字对应**。
+///    漏解一个字段不会报错，只会「那个值永远是 nil」——
+///    这正是绿圈一直不出现的原因（见 `user_found_problem.md` 第 1 条）。
 struct SidecarEvent: Decodable {
     let event: String
     let code: String?
@@ -161,13 +165,42 @@ struct SidecarEvent: Decodable {
     let hint: String?
     let connected: Bool?
     let ddiMounted: Bool?
+    let tunnelUp: Bool?
     let streaming: Bool?
+    let deviceName: String?
+    let iosVersion: String?
+    let phase: String?
+    let injected: Int?
+    let dropped: Int?
+    let error: String?
+    /// ★ 上一次成功注入的位置 —— 地图上那个绿圈就画在这里。
+    ///
+    /// 为 `nil` 有两种含义，**都不能编一个假位置顶上**：
+    ///   · 从没注入过（设备刚连上）
+    ///   · 刚 `clear()` 过，设备已回到真实 GPS，而真实位置读不到
+    ///     （pymobiledevice3 没有读取设备定位的 API）
+    /// 两种情况下 GUI 都应退回「由用户点第一个点当起点」。
+    let lat: Double?
+    let lon: Double?
 
     enum CodingKeys: String, CodingKey {
         case event, code, message, hint
         case connected
         case ddiMounted = "ddi_mounted"
+        case tunnelUp = "tunnel_up"
         case streaming
+        case deviceName = "device_name"
+        case iosVersion = "ios_version"
+        case phase
+        case injected, dropped, error
+        case lat, lon
+    }
+
+    /// 设备报出的位置。**两个都必须有**才算有效 ——
+    /// 只给一个（经度缺省 0）会落到几内亚湾外海，比没有更糟。
+    var location: GeoPoint? {
+        guard let lat, let lon else { return nil }
+        return GeoPoint(lat: lat, lon: lon)
     }
 }
 
