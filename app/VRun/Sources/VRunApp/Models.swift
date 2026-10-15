@@ -183,6 +183,30 @@ struct SidecarEvent: Decodable {
     let lat: Double?
     let lon: Double?
 
+    // MARK: - 实时指标（`tick` / `progress`）
+    //
+    //  ⚠️ 2026-10-15 才补上的一组字段。**在补上之前它们一直在被丢掉**：
+    //     Python 侧按 1 Hz 发，`Decodable` 也成功（缺的字段不算错），
+    //     于是「协议没对上」这件事可以潜伏很久而不报任何错。
+    //     载荷形状由 `tests/golden/session_events.json` 锁死，
+    //     两侧同时红 —— 见 LiveMetrics.swift 与 test_session_golden.py。
+
+    /// 已用时（秒）
+    let t: Double?
+    /// 沿路线已走弧长（米）
+    let s: Double?
+    /// 路线全长（米）。只有 `progress` 带，`tick` 不带。
+    let targetM: Double?
+    /// 剖面目标速度（km/h）
+    let vTarget: Double?
+    /// 本段实际速度（km/h，含噪声位移的影响）
+    let vActual: Double?
+    /// 表观速度 1σ（km/h）。**只有实时 `progress` 带** ——
+    /// 会话摘要（prepare/start/stop 的应答）不带，用它区分两者。
+    let sigmaV: Double?
+    /// 采样率（Hz）
+    let sampleRate: Double?
+
     enum CodingKeys: String, CodingKey {
         case event, code, message, hint
         case connected
@@ -194,6 +218,12 @@ struct SidecarEvent: Decodable {
         case phase
         case injected, dropped, error
         case lat, lon
+        case t, s
+        case targetM = "target_m"
+        case vTarget = "v_target"
+        case vActual = "v_actual"
+        case sigmaV = "sigma_v"
+        case sampleRate = "sample_rate"
     }
 
     /// 设备报出的位置。**两个都必须有**才算有效 ——

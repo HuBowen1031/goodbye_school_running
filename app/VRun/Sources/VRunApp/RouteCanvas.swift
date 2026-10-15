@@ -161,6 +161,11 @@ struct RouteCanvas: NSViewRepresentable {
     /// 钢笔是否激活。由草图右侧那根竖排工具栏控制。
     var isPenActive: Bool
     var route: RouteModel
+    /// ★ 当前位置（会话进行中）。`nil` = 不画。
+    ///
+    /// 数据源是 `session.live.coordinate`，即**侧车真正注入进去的那个坐标**，
+    /// 不是 Mac 自己的位置（那正是 `showsUserLocation` 的错误之处，见文件头）。
+    var currentPosition: GeoPoint?
     /// 点到地图时回调（带地图坐标）
     var onPick: (GeoPoint) -> Void
 
@@ -277,6 +282,40 @@ struct RouteCanvas: NSViewRepresentable {
             context.coordinator.hasCenteredOnAnchor = false
             map.removeAnnotations(map.annotations.filter { $0 is DeviceAnnotation })
         }
+
+        // 当前位置（1 Hz）
+        //
+        // ⚠️ 只**改** annotation 的 coordinate，**绝不** remove + re-add。
+        //
+        //    理由是 F13 的教训：那次的崩溃就出在「移视野的同时增删 annotation」
+        //    这条路径上。remove/add 会让 MapKit 整个销毁并重建 view，
+        //    1 Hz 重建一次既浪费又在 MapKit 内部制造不必要的状态切换。
+        //
+        //    `coordinate` 标了 `@objc dynamic`，MapKit 会 KVO 到并自行挪动 view。
+        if let cur = currentPosition {
+            if let ann = context.coordinator.currentAnnotation {
+                if Self.positionNeedsUpdate(from: ann.point, to: cur) {
+                    ann.point = cur
+                    ann.coordinate = CLLocationCoordinate2D(latitude: cur.lat, longitude: cur.lon)
+                }
+            } else {
+                let ann = CurrentPositionAnnotation(point: cur)
+                context.coordinator.currentAnnotation = ann
+                map.addAnnotation(ann)
+            }
+        } else if context.coordinator.currentAnnotation != nil {
+            context.coordinator.currentAnnotation = nil
+            map.removeAnnotations(map.annotations.filter { $0 is CurrentPositionAnnotation })
+        }
+    }
+
+    /// 当前位置挪得够不够远，值得动一下 annotation。
+    ///
+    /// 抽成静态纯函数是为了能单测 —— 它决定 1 Hz 下 MapKit 被打扰多少次。
+    /// 阈值 1.5 m：10 km/h 时每秒走 2.8 m，跑步中每 tick 都会动；
+    /// 停住时（预置阶段、暂停、到达终点）则完全不触发。
+    static func positionNeedsUpdate(from old: GeoPoint, to new: GeoPoint) -> Bool {
+        RouteModel.haversine(old, new) >= 1.5
     }
 
     static func dismantleNSView(_ nsView: PenMapView, coordinator: Coordinator) {
@@ -297,6 +336,8 @@ struct RouteCanvas: NSViewRepresentable {
         var hasCenteredOnAnchor = false
         /// 绿圈当前是否**压在路线第一个点**上 —— 决定要不要画白描边。
         var anchorIsOnRoute = false
+        /// 当前位置的 annotation。会话期间**只挪坐标、不重建**（见 updateNSView）。
+        var currentAnnotation: CurrentPositionAnnotation?
 
         init(_ parent: RouteCanvas) { self.parent = parent }
 
@@ -348,6 +389,18 @@ struct RouteCanvas: NSViewRepresentable {
                 v.displayPriority = .required
                 return v
 
+            case let a as CurrentPositionAnnotation:
+                let id = "here"
+                let v = mapView.dequeueReusableAnnotationView(withIdentifier: id)
+                    as? MKMarkerAnnotationView ?? MKMarkerAnnotationView(annotation: a, reuseIdentifier: id)
+                v.annotation = a
+                v.glyphImage = NSImage(systemSymbolName: "figure.run", accessibilityDescription: nil)
+                v.markerTintColor = .systemOrange
+                v.canShowCallout = false
+                // 当前位置是会话进行中最该被看见的东西，不能被别的 marker 挤掉
+                v.displayPriority = .required
+                return v
+
             case let a as PointAnnotation:
                 let id = "pt"
                 let v = mapView.dequeueReusableAnnotationView(withIdentifier: id)
@@ -381,6 +434,21 @@ struct RouteCanvas: NSViewRepresentable {
             CLLocationCoordinate2D(latitude: point.lat, longitude: point.lon)
         }
         init(point: GeoPoint) { self.point = point }
+    }
+
+    /// 当前位置。会话期间**只挪坐标、不重建 view**。
+    ///
+    /// ⚠️ `coordinate` 必须标 `@objc dynamic`（ObjC 侧叫 KVO-compliant）。
+    ///    MKAnnotation 协议要求这个：MapKit 靠 KVO 观察坐标变化来移动 view。
+    ///    漏了 `@objc dynamic` 的话编译照过、MapKit 照收，
+    ///    只是**图上的点永远不动** —— 又是一个不报错的哑 bug。
+    final class CurrentPositionAnnotation: NSObject, MKAnnotation {
+        var point: GeoPoint
+        @objc dynamic var coordinate: CLLocationCoordinate2D
+        init(point: GeoPoint) {
+            self.point = point
+            self.coordinate = CLLocationCoordinate2D(latitude: point.lat, longitude: point.lon)
+        }
     }
 }
 

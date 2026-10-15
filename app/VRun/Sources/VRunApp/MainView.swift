@@ -166,6 +166,9 @@ struct MainView: View {
         RouteCanvas(
             isPenActive: isPenActive,
             route: route,
+            // 冻结后（stop）仍然显示 —— 用户要靠它核对「停在哪儿」。
+            // 清理（cleanup）时 live 被 reset，这里自然回到 nil。
+            currentPosition: session.live.coordinate,
             onPick: { p in
                 route.add(p)
                 log(.info, String(format: "加点 (%.6f, %.6f) · 共 %d 点 · %.0f m",
@@ -302,6 +305,34 @@ struct MainView: View {
             KV(k: "预计", v: session.exact?.etaStr ?? PreviewMath.durationText(
                     PreviewMath.closedFormEta(distanceM: session.targetDistanceM, kmh: session.speedKmh)))
             KV(k: "进度", v: session.progressText, color: .secondary)
+
+            // ── 运行中读数 ──────────────────────────────────
+            // ⚠️ 整块只在 `live.isLive` 时出现。
+            //    没收到实时数据就显示一排 0，比不显示更难查 ——
+            //    「还没开始」和「跑了 0 米」是两件事。
+            //
+            // ★ 这一块是 2026-10-15 才接上的。Python 侧一直按 1 Hz 发
+            //   tick/progress，Swift 侧却在 `apply(_:)` 里把它们滤掉了，
+            //   于是会话进行中这些读数**一个都没有**。见 LiveMetrics.swift。
+            if session.live.isLive {
+                Divider().opacity(0.35)
+                Text("运行中")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                KV(k: "已走", v: session.live.progressText, color: .safeGreen)
+                KV(k: "用时", v: session.live.elapsedText)
+                // 实测与目标**分成两行**，不合成一行 ——
+                // HUD 固定 236 pt，「10.3 km/h / 目标 10.0 km/h」会折行，
+                // 折出来的第二行只剩一个孤零零的 "h"（实测截图确认过）。
+                // 相邻两行照样能一眼看出差值，而排版不会塌。
+                KV(k: "速度", v: session.live.speedText, color: .safeGreen)
+                KV(k: "目标速度", v: session.live.targetSpeedText)
+                // 表观抖动：这个值大 ⇒ 跑步 App 的判定越容易被噪声带偏，
+                // 是 works.md §3.5 的核心观察对象。
+                KV(k: "抖动", v: session.live.sigmaText,
+                   color: session.live.sigmaV > 3 ? Color.riskRed : .secondary)
+                KV(k: "配速", v: session.live.paceText, color: .secondary)
+            }
         }
         // ⚠️ glassEffect 只负责折射层，**不给内容留白**。
         //    不显式 padding 的话文字会直接压在玻璃边缘上，看起来像被裁了一刀。

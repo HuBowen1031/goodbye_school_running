@@ -66,6 +66,21 @@
       第 1 次加点重绘成功后，`updateNSView` 里的 `setCenter` 把进程带走了。
       ⇒ 先分清「界面没更新」和「进程已经没了」，再动手改观察链。
 
+**v7 修订（2026-10-15）—— 接通实时数据线（M3 最后一项代码活）**
+
+- ✅ §6 M3「实时视图」**完成**：地图当前位置、已走距离 / 用时 / 瞬时速度 / 目标速度、
+      表观速度抖动、配速。
+- 🆕 新增 **F14**：`vrun.session` 一直按 1 Hz 发 `tick` / `progress`，
+      而 Swift 侧 `SidecarEvent` 不解码那些字段、`apply(_:)` 也只认 `device` ——
+      **两侧都不报错**，GUI 对会话 progress 一直是瞎的。
+      ⇒ **`Decodable` 成功不等于字段对上了**。跨语言协议必须有一份
+      「**双方共用的真实载荷**」：`tests/golden/session_events.json`，
+      改协议时两侧同时红。
+- ⚠️ 登记一个协议 wart（**未改，只记录**）：`progress` 事件名被**重载** ——
+      `run.prepare` / `run.start` / `run.stop` 的应答（会话摘要）
+      与 1 Hz 实时指标同名，载荷形状却不同，靠 `sigma_v` 在不在区分。
+      分事件名拆开会动协议，留到有实测依据时再改（见 findings F14）。
+
 ---
 
 ## 0. 目标
@@ -769,7 +784,18 @@ environment.yml            ← conda 层：python 版本、conda 包
       —— ✅ **M3 全部落地**（14 个文件 / 2620 行，commit `05fb220`），
       随后修掉三个实测缺陷（滑块爆栈 / HUD 边距 / 侧栏按钮撞标题），
       并落地 `build_app.sh`（`eeb8e3a`）。
-- [ ] 实时视图：地图当前位置、已走距离 / 用时 / 瞬时速度、表观速度抖动、日志
+- [x] 实时视图：地图当前位置、已走距离 / 用时 / 瞬时速度、表观速度抖动、日志
+      —— ✅ 2026-10-15 接通（v7）。这项**不是「加个 UI」，而是接一条从没接上的数据线**：
+        `session.py` 一直按 1 Hz 发 `tick` + `progress`，而 Swift 侧
+        `SidecarEvent` 没解码那些字段、`apply(_:)` 也只认 `device` ——
+        事件收下了、内容全丢，两侧都不报错。见 findings **F14**。
+      落地：
+        · 新增 `LiveMetrics.swift`（纯模型，可单测驱动）+ `SessionController.live`
+        · HUD 新增「运行中」区块：已走 / 用时 / 速度 / 目标速度 / 抖动 / 配速
+        · 地图画当前位置（橙色跑步小人），**只改 annotation 坐标、不重建 view**（F13 的教训）
+        · 跨语言基准 `tests/golden/session_events.json`，两侧同时红
+      ⚠️ 实测发现并修掉一个排版问题：HUD 固定 236 pt，
+        「10.3 km/h / 目标 10.0 km/h」会折行成孤零零的 "h" ⇒ 拆成两行。
 - [x] 与侧车的 JSON Lines 通信（断线重连、错误展示）
       —— `SidecarClient.swift` 已落地；解释器路径经 `resolve_python.sh` 解析（F7），
       **不硬编码**任何 python 绝对路径
@@ -778,14 +804,14 @@ environment.yml            ← conda 层：python 版本、conda 包
 
 见 §7 的清单，逐条执行并把结果写进 `docs/findings.md`。
 
-- [x] 离线 golden tests 全绿 —— Python **298 passed** / Swift **55 passed**
+- [x] 离线 golden tests 全绿 —— Python **302 passed** / Swift **77 passed**
 - [ ] 真机跑一次 3 km @ 10.0 km/h，比对预览 ETA 与日志实际用时（**要求差 < 2 s**）
       —— ⚠️ **上次跑到 19 分半被打断**，需完整重跑 19 分 22 秒的 3.2 km 轨迹。
       M1 的离线等效验证已过（ETA 差 1.15 s），但那是**假时钟**下的，不算数。
 - [ ] 清理可靠性演练（正常结束 / Ctrl-C / 强杀 GUI）
       —— 三保险已单测覆盖（F11 的第 3 条），**真机强杀未验**
 - [ ] 记录校园 App 的计数与判定结果，和面板的「判定预期」逐条比对
-- [x] 汇总 `docs/findings.md` —— F1–F12
+- [x] 汇总 `docs/findings.md` —— **F1–F13**
 
 ### M5 · 打包与文档
 
@@ -810,7 +836,10 @@ environment.yml            ← conda 层：python 版本、conda 包
       且**每一个都容易被误判成 GUI 代码写坏了**：
       Dock 无图标 / **窗口无法置前**（`AXRaise`、`set frontmost` 全部静默失败）/ 菜单栏是别的 app 的。
       详见 `docs/file-manifest.md` §5.2
-- [ ] App 通过绝对路径调用 conda 环境的 python 启动侧车（不追求完全自包含，可靠性优先）
+- [x] App 通过绝对路径调用 conda 环境的 python 启动侧车（不追求完全自包含，可靠性优先）
+      —— ✅ 早已落地，本轮才核对上（v7 收尾）：`SidecarClient.swift:78` 经
+      `/bin/zsh` 跑 `scripts/resolve_python.sh` 解出解释器，
+      **不硬编码任何 python 绝对路径**（F7：硬编码会让侧车直接启动失败）
 - [ ] `works.md` / `README.md` 定稿：架构、协议、参数含义、滑块面板使用说明、故障排查
 
 ---

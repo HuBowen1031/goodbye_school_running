@@ -83,13 +83,21 @@ final class SessionController: ObservableObject {
     @Published private(set) var hasQueriedDevice = false
 
     @Published private(set) var progressText = "尚未开始"
-    @Published private(set) var tick: (t: Double, lat: Double, lon: Double, s: Double)?
+
+    /// ★ 会话进行中的实时读数（1 Hz 更新）。
+    ///
+    /// 2026-10-15 之前这里挂的是一个 `@Published var tick: (t,lat,lon,s)?`
+    /// —— **从来没被赋过值**，是个死字段。而 Python 侧一直在按 1 Hz 发
+    /// `tick` / `progress`，事件也一直在进 `apply(_:)`，只是被 `if` 滤掉了。
+    /// 两边都不报错，所以这个洞可以潜伏到有人真去读实时数据才发现。
+    /// 见 LiveMetrics.swift。
+    @Published private(set) var live = LiveMetrics()
 
     /// 运行中锁滑块（§5.7）。只读，不阻止越界设定，只负责如实预警。
     var isSpeedLocked: Bool { phase.isActive }
 
     let route: RouteModel
-let sidecar: SidecarClient
+    let sidecar: SidecarClient
 
     /// 日志出口。MainView 把它接到自己的 LogStore 上 ——
     /// 侧车的消息**一律经过 SessionController** 再出去，
@@ -174,6 +182,11 @@ let sidecar: SidecarClient
     }
 
     func apply(_ ev: SidecarEvent) {
+        // ★ 实时指标先接。`ingest` 自己判别 `progress` 是摘要还是实时，
+        //   也会顺带返回「这条事件有没有更新读数」——
+        //   所以下面那个 `device` 分支不受影响，两条线互不干扰。
+        if live.ingest(ev) { return }
+
         if ev.event == "device" {
             // 每次收到 device 事件都收尾查询状态 ——
             // 否则刷新按钮会一直转圈到超时，用户会以为按钮坏了。
@@ -230,6 +243,13 @@ let sidecar: SidecarClient
     // MARK: - 会话控制
 
     func prepare() {
+        // ⚠️ 必须清：否则上一次会话残留的距离会一直挂在 HUD 上，
+        //   新会话刚开始的十几秒里用户会以为「怎么一上来就走了 2 km」。
+        //
+        //   刻意放在 guard **之前** —— 用户按下「预置」就意味着「我要重开一次」，
+        //   此时哪怕因为点数不足而被拒，界面也不该还显示上一次的距离。
+        //   （stop 冻结是为了核对终点；prepare 是开始新一轮，语义相反。）
+        live.reset()
         guard route.isRoutable else { progressText = "路线点数不足"; return }
         progressText = "预置起点…"
         phase = .prepared
@@ -258,6 +278,8 @@ let sidecar: SidecarClient
 
     func stop() {
         phase = .stopped
+        // 冻结而不清零 —— 用户要靠它核对「到底停在哪儿、走了多远」。
+        live.freeze()
         progressText = "已停止（保持在终点）"
         sidecar.send(.command(Command.Name.runStop))
     }
@@ -265,6 +287,7 @@ let sidecar: SidecarClient
     /// 显式清理。这是**唯一**该发出清理的地方 —— 杜绝多处调用导致分叉。
     func cleanup() {
         sidecar.send(.deviceCleanup())
+        live.reset()
         phase = .cleaned
         progressText = "已清除模拟定位"
     }

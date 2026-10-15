@@ -19,6 +19,18 @@ SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+
+def pytest_addoption(parser):
+    """``--regen``：重新生成跨语言基准（``tests/golden/``）。
+
+    为什么挂在 conftest 而不是让脚本直接跑
+        直接 ``python tests/xxx.py`` 时 ``src/`` 不在 ``sys.path`` 上，
+        ``import vrun`` 会失败 —— 而这恰恰是「改完协议要重新生成基准」
+        最常出现的场景。走 pytest 就没这个坑。
+    """
+    parser.addoption("--regen", action="store_true", default=False,
+                     help="重新生成 tests/golden/ 下的跨语言基准")
+
 from vrun.noise import GPSNoise  # noqa: E402
 from vrun.profile import SpeedProfile  # noqa: E402
 from vrun.route import Route  # noqa: E402

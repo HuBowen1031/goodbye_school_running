@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "_doc": [
+    "跨语言契约：vrun.session 发出的 tick / progress 实时载荷。",
+    "Python 侧 tests/test_session_golden.py 比对键集合；",
+    "Swift 侧 LiveMetricsTests.swift 直接读本文件并解码。",
+    "⚠️ 改协议字段时两侧会同时红 —— 照失败信息跑 --regen 重新生成。",
+    "⚠️ progress 事件名被重载：会话摘要与 1 Hz 实时指标同名，",
+    "   靠 `sigma_v` 是否存在区分（见 _doc 最后一条）。"
+  ],
+  "tick": {
+    "t": 1.2500095181167126e-07,
+    "lat": 30.553494881309096,
+    "lon": 103.99099809790133,
+    "s": 0.0,
+    "v_target": 16.999999999651422,
+    "v_actual": 16.999999999651422
+  },
+  "progress": {
+    "t": 0.0,
+    "lat": 30.5535,
+    "lon": 103.991,
+    "s": 0.0,
+    "target_m": 431.82023519736157,
+    "v_actual": 0.0,
+    "v_target": 0.0,
+    "sigma_v": 1.9552012599840356,
+    "sample_rate": 1.0
+  }
+}

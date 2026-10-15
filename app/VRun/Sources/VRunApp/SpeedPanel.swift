@@ -204,7 +204,13 @@ struct SpeedPanel: View {
             HStack(spacing: 5) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 9)).foregroundStyle(Color.warnYellow)
-                Text(String(format: "预览与侧车精确值相差 %.1f s（本次参数下正常）", session.driftSeconds))
+                // 同时给出**差值**与**侧车的精确值** ——
+                // 只报「差 1.4 s」用户没法判断该信谁，
+                // 给出精确值才能自己核对是不是就差在取整上（见 F10）。
+                // ⚠️ 只能说「相差」不能说「快/慢」：`driftSeconds` 取的是
+                //    `abs(...)`，方向信息在这里根本不存在。
+                Text(String(format: "预览与侧车相差 %.1f s · 侧车 %@",
+                            session.driftSeconds, e.etaStr))
                     .font(.system(size: 9)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer()

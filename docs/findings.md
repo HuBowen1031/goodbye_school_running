@@ -593,6 +593,82 @@ MapKit 在把 annotation 装配成 view 时抛 ObjC 异常，没人接 ⇒ `abor
 
 ---
 
+## F14 ★ 跨语言协议两侧**都不报错**：`Decodable` 成功不等于字段对上了
+
+**涉及**：`app/VRun/Sources/VRunApp/Models.swift`（`SidecarEvent`）、
+`app/VRun/Sources/VRunApp/SessionController.swift`（`apply(_:)`）、
+`tests/golden/session_events.json`（新增）、`tests/test_session_golden.py`（新增）
+
+### 症状
+
+M3 的「实时视图」一直没人实现，但查下去发现**不是缺功能，是有一条一直在发、
+但从来没被接过的数据线**：
+
+- `session.py` 从 M2 落地起就一直按 1 Hz 发 `tick` + `progress`
+- Swift 侧 `SidecarEvent` **压根没声明** `t / s / v_target / v_actual / sigma_v / …`
+- `SessionController.apply(_:)` 里 `if ev.event == "device"`，
+  其余事件连看都不看
+
+后果：会话进行中，GUI 的 HUD 只有一个「进度：开始推进…」，
+已走距离、用时、瞬时速度、抖动**一个都没有**。
+而 M4 要做的「比对预览 ETA 与实际用时」，在这种情况下只能靠翻日志文本。
+
+**全程零报错。** 编译干净、Python 侧照发、Swift 侧 `Decodable` 照成功。
+
+### 为什么两侧都沉默
+
+因为 `SidecarEvent` 的字段全是**可选**（`let t: Double?` 这种）。
+`Codable` 的约定是：**JSON 里没有的键，解出来就是 `nil`，不算错**。
+于是「Python 发了一个字段」与「Swift 压根不知道有这个字段」这两件事，
+在运行时**完全无法区分**。
+
+顺带一提：当时还挂着一个 `@Published var tick: (t, lat, lon, s)?`，
+**从来没被赋过值**，是个死字段 —— 它让人以为「tick 已经被处理过了」。
+
+### 处置
+
+新增 `tests/golden/session_events.json`：**真跑一小段会话**（假设备、不碰硬件）
+抓下第一个 `tick` 与第一个实时 `progress`，两侧都对着它写：
+
+| 侧 | 文件 | 验什么 |
+| --- | --- | --- |
+| Python | `tests/test_session_golden.py` | 载荷的**键集合**与基准严格相等 |
+| Swift | `LiveMetricsTests.swift` | 真去**解码**那份 JSON，数值逐字相等 |
+
+比对**键集合**而不是逐值相等：浮点会随 numpy 版本合法地漂一点，
+而**键名对不上才是真正的契约破裂**。
+
+变异验证（协议漂移会不会被抓到）：
+给 `tick` 多塞一个 `elevation` 字段 → Python 侧红，报出「基准 vs 实际」的键差异；
+把 Swift 的 `case sigmaV = "sigma_v"` 拼成 `"sigma_V"` → **3 条 Swift 测试红**。
+
+### 三条可复用的纪律
+
+**其一：`Decodable` 成功 ≠ 字段对上了。**
+可选字段的解码永远不会失败，所以「解码成功」这个信号在协议一致性上**零信息量**。
+
+**其二：跨语言协议必须有「**双方共用的真实载荷**」。**
+注意是**真实**——不是照着头文件手抄一份。`PreviewMathTests` 那种
+「把 golden 的数值转抄进 Swift 测试」的写法在这里会**重演同一个 bug**：
+转抄本身就是一次人工搬运，而这次 bug 的本质就是搬运没发生
+（压根没想到要搬）。所以 Swift 侧直接读那份 JSON。
+
+**其三：注册一个协议 wart，而不是顺手改协议。**
+`progress` 事件名被**重载**了：`run.prepare` / `run.start` / `run.stop`
+的应答（会话摘要）与 1 Hz 实时指标同名，载荷形状却不同 ——
+现在靠「`sigma_v` 在不在」区分。
+
+拆成两个事件名显然更干净，但那是**改协议**，会影响 Python 侧与已有文档。
+在没有实测依据、也没有第二个消费方的情况下改它，属于超出问题范围的改动 ——
+所以这里只登记、只给消费侧加测试守住这个约定
+（Python 侧 `test_progress确实被重载…`），把决策留给真正要动协议的时候。
+
+⚠️ 消费侧必须显式写判别式。写成 `case "progress":` 就完蛋：
+GUI 会把「会话刚开始，这是摘要」当成一条实时读数，
+显示出一个不动的 0 km/h —— **比不显示更难查**。
+
+---
+
 ## 汇总
 
 | 编号 | 类型 | 影响 | 处置 |
@@ -610,3 +686,4 @@ MapKit 在把 annotation 装配成 view 时抛 ObjC 异常，没人接 ⇒ `abor
 | F11 | ★ **静默失效** | 会话从不注入；停止要等跑完；保险泄漏 | 三个都靠单测抓（真机 18 分钟也未必看得出）；见 F11 |
 | F12 | ★ **测试偷连真机** | 套件「随机」挂死（手机插着才复现） | fixture 层隔离硬件；见 F12 |
 | F13 | ★ **误判崩溃真凶** | 点一下即 abort；26 条纯逻辑测试全绿也拦不住 | 改 `canShowCallout`；新增真喂 MapKit 的集成测试；见 F13 |
+| F14 | ★ **跨语言协议静默断开** | 1 Hz 的 tick/progress 一直在发，GUI 一直收不到，两侧零报错 | 新增双方共用的真实载荷基准 `tests/golden/session_events.json`；见 F14 |
