@@ -320,7 +320,9 @@ def _build_soak_route(args, speed: float) -> tuple[Route, object]:
 
     from .preview import plan_laps, preview
 
-    center = _parse_center(args.center)
+    # ★ argparse 的 ``type=`` 已经在解析期校验过，这里拿到的必是合法二元组。
+    #   刻意不在这里重跑一遍校验 —— 两处校验意味着两处会漂。
+    center = args.center
     diameter = args.diameter
     fence = args.fence_radius
 
@@ -387,7 +389,7 @@ def _cmd_soak(args: argparse.Namespace) -> int:
     if pv is not None:
         from .preview import preview_lines, rule_table_lines
 
-        print(f"★ 离线预览（未连接设备）—— 圆心 {args.center}，"
+        print(f"★ 离线预览（未连接设备）—— 圆心 {args.center[0]:.6f}, {args.center[1]:.6f}，"
               f"直径 {args.diameter:g} m，以 {args.smooth:g} s 平滑口径为准\n")
         for line in preview_lines(pv):
             print(line)
@@ -654,7 +656,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="预置后的静置秒数。默认 0（压测用）；"
                              "要让用户在 App 里操作时必须给足（works.md §4.3.2 "
                              "要求 10–20 s，否则瞬移到起点那跳会落在记录窗口内）")
-    p_soak.add_argument("--center", default=None,
+    p_soak.add_argument("--center", type=_parse_center, default=None,
                         help="圆心，格式「纬度,经度」。给了就启用**圆模式**："
                              "以该点为圆心重复同一个圆，圈与圈几何完全重合")
     p_soak.add_argument("--diameter", type=float, default=30.0,

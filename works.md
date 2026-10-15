@@ -106,7 +106,7 @@
       噪声 +0.85%、弦 −0.14%、低通最多 −15%）
       / **F17**（余量恒等于 1.0 —— 一个**永远不会失败**的检查）
       / **F18**（`--noise` 手写 `strict` 而引擎只认 `harsh`）
-- ✅ 验收：Python **385 passed**；**12 组变异测试全部命中**。
+- ✅ 验收：Python **397 passed**；**13 组变异测试全部命中**。
 
 ---
 
@@ -893,7 +893,7 @@ environment.yml            ← conda 层：python 版本、conda 包
 
 见 §7 的清单，逐条执行并把结果写进 `docs/findings.md`。
 
-- [x] 离线 golden tests 全绿 —— Python **385 passed** / Swift **77 passed**
+- [x] 离线 golden tests 全绿 —— Python **397 passed** / Swift **77 passed**
 - [x] ★ **圈模式 + 离线预览**（2026-10-15，见 §6.1）
       —— 「30 m 的圈」与「3 km」用「同一个圆重复 N 圈」解耦，
       并新增 `soak --dry-run`：**不占手机**就能算出 App 口径的 R1–R5 与围栏判据

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from vrun.cli import build_parser, main
 from vrun.route import Route
 
@@ -167,3 +169,58 @@ class TestNoiseLevelsStayInSync:
                     continue
                 for level in act.choices:
                     GPSNoise(level=level)  # 非法档位会在这里抛 ValueError
+
+
+class TestCenterParsing:
+    """``--center`` 走 argparse 的 ``type=``：非法输入在**解析期**就被拒。
+
+    早期版本在 ``_cmd_soak`` 里手动调 ``_parse_center``，
+    于是用户输错坐标得到的是一整段 traceback ——
+    而 ``--distance`` 输错是 argparse 的标准报错。同一类错误两种待遇。
+    """
+
+    @pytest.mark.parametrize("raw,lat,lon", [
+        ("30.628212,104.084842", 30.628212, 104.084842),
+        (" 30.628212 , 104.084842 ", 30.628212, 104.084842),
+    ])
+    def test合法坐标被接受(self, raw, lat, lon) -> None:
+        args = build_parser().parse_args(
+            ["soak", "--center", raw, "--dry-run", "--to-end"])
+        assert args.center == (lat, lon)
+
+    @pytest.mark.parametrize("raw", ["30.6", "a,b", "1,2,3", ""])
+    def test格式错误在解析期被拒(self, raw) -> None:
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["soak", "--center", raw, "--to-end"])
+
+    @pytest.mark.parametrize("raw", ["200,300", "-91,0", "0,181"])
+    def test越界坐标在解析期被拒(self, raw) -> None:
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["soak", "--center", raw, "--to-end"])
+
+    def test不给中心就是非圆模式(self) -> None:
+        assert build_parser().parse_args(["soak", "--to-end"]).center is None
+
+    def test_dry_run缺中心时报错而不是静默通过(self, capsys) -> None:
+        """★ 静默返回 0 等于告诉调用方「预览通过了」。"""
+        assert main(["soak", "--dry-run", "--to-end"]) == 2
+        assert "需要配合 --center" in capsys.readouterr().err
+
+
+class TestDryRunNeverTouchesDevice:
+    """``--dry-run`` 的全部意义就是**不占手机**，它必须一行设备代码都跑不到。"""
+
+    def test_dry_run在构造设备之前就返回(self, monkeypatch, capsys) -> None:
+        import vrun.cli as cli
+
+        def boom(*a, **k):
+            raise AssertionError("--dry-run 竟然碰了设备层")
+
+        monkeypatch.setattr("vrun.device.DeviceBridge", boom)
+        assert cli.main([
+            "soak", "--dry-run", "--to-end",
+            "--center", "30.628212,104.084842", "--diameter", "30",
+        ]) == 0
+        out = capsys.readouterr().out
+        assert "离线预览" in out
+        assert "设备层就绪" not in out, "不该走到连设备那一步"
