@@ -79,6 +79,9 @@ class SoakResult:
     #: 路线（18:01）先跑完而被判成「没跑满」—— **假阴性**；
     #: 反过来定 20 分钟又会让引擎跑完还空转 2 分钟。
     to_end: bool = False
+    #: 预置完成、可以开始操作 App 之后，是否已经通知过。
+    #: ``on_prepared`` 只触发一次 —— 后续的 progress 事件都带着实时指标。
+    prepared_notified: bool = False
     #: 引擎是否**跑到了路线终点**（``RunStats.completed``）
     route_completed: bool = False
 
@@ -244,7 +247,9 @@ async def soak(
     noise_level: str = "realistic",
     seed: int = 0,
     to_end: bool = False,
+    settle_s: float = 0.0,
     on_progress: Optional[Callable[[int, int], None]] = None,
+    on_prepared: Optional[Callable[[], None]] = None,
 ) -> SoakResult:
     """连着设备跑，按 ``sample_rate_hz`` 注入。
 
@@ -252,6 +257,15 @@ async def soak(
 
     ``False``（默认）
         跑满 ``duration_s`` 秒就停。回答的是「这段时间里稳不稳」。
+
+    ⚠️ ``settle_s`` 默认 0，只适用于**压测**
+        works.md §4.3.2 规定：预置起点后要静置 10–20 s，
+        **再由用户在 App 里开始跑** ——
+        这样「瞬移到起点」那一次跳变不会落在 App 的会话窗口内。
+        压测时没有 App 在记录，静置没有意义，所以默认 0。
+        但只要这次运行是为了让用户操作 App（``--to-end`` 的 M4 验收），
+        **必须给足静置时间**，否则那一跳会被 App 记成一次荒唐的位移。
+        传 ``on_prepared`` 可以在预置完成那一刻通知用户开始操作。
     ``True``
         **跑到路线终点**才停。回答的是「整条轨迹跑完对不对」——
         M4 的 3 km 验收要的是这个，而且顺带比对预览 ETA 与实际用时。
@@ -286,6 +300,14 @@ async def soak(
             ticks += 1
             if on_progress and ticks % 30 == 0:
                 on_progress(ticks, rep.planned_samples)
+        elif name == "device" and on_prepared and not rep.prepared_notified:
+            # ⚠️ 判别信号是 **device** 事件，不是 progress。
+            #    `prepare()` 发的是 `_emit("device", phase=..., prepared_at=[...])`；
+            #    它紧接着发的那个 progress 走的是 `_progress()`，
+            #    载荷里**根本没有 phase** 这个键 —— 按 progress 判会永远等不到。
+            if payload.get("phase") == "prepared":
+                rep.prepared_notified = True
+                on_prepared()
         elif name == "error" and not rep.error:
             rep.error = (f"{payload.get('code', 'error')}: "
                          f"{payload.get('message', '')}").strip()
@@ -298,7 +320,7 @@ async def soak(
     # 预览 ETA 用 §3.6 的闭式解 —— 与面板上显示的是**同一个函数**，
     # 所以这里量到的差值就是「用户看到的预估准不准」。
     rep.planned_eta_s = closed_form_eta(route.length(), speed_kmh, profile)
-    sess = RunSession(bridge=bridge, emit=emit, settle_s=0.0,
+    sess = RunSession(bridge=bridge, emit=emit, settle_s=settle_s,
                       profile=profile, noise=noise, sample_rate=sample_rate_hz)
 
     t0 = time.perf_counter()

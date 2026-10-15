@@ -437,3 +437,58 @@ def testwait_until_finished真能等到引擎跑完():
 
     # 8 秒不够跑完 4000 m ⇒ 返回 False，但这恰恰证明「它在等」而不是立刻返回
     assert asyncio.run(run()) is False
+
+
+# ══════════════════════════════════════════════════════════════════
+#  静置与「可以开始了」的时序
+#
+#  ⚠️ 为什么这条要钉死（works.md §4.3.2）
+#     压测默认 settle_s=0（没有 App 在记录，静置没意义）。
+#     但只要这次运行是为了**让用户在 App 里操作**，
+#     瞬移到起点那一次跳变就绝不能落在 App 的记录窗口内 ——
+#     否则 App 会把「从成都瞬移到北京」记成一次荒唐的位移。
+# ══════════════════════════════════════════════════════════════════
+
+
+def test预置完成会触发一次on_prepared():
+    bridge = FakeBridge()
+    route = make_long_route(400.0, (30.5535, 103.9910))
+    fired = []
+
+    asyncio.run(soak(bridge, route, duration_s=1.5, sample_rate_hz=5.0,
+                     speed_kmh=10.0, settle_s=0.2,
+                     on_prepared=lambda: fired.append(1)))
+
+    assert fired, "用户没收到「可以开始了」的信号 —— 他就不知道何时去操作 App"
+
+
+def teston_prepared只触发一次():
+    """后续每秒的 progress 都带着实时指标，不能每条都喊一次。"""
+    bridge = FakeBridge()
+    route = make_long_route(400.0, (30.5535, 103.9910))
+    fired = []
+
+    asyncio.run(soak(bridge, route, duration_s=2.0, sample_rate_hz=5.0,
+                     speed_kmh=10.0, settle_s=0.2,
+                     on_prepared=lambda: fired.append(1)))
+
+    assert len(fired) == 1, f"通知了 {len(fired)} 次，用户会被刷屏"
+
+
+def test静置时间确实被传给会话():
+    """settle_s 没传下去的话，手机会在用户还没来得及操作时就开跑。"""
+    seen = {}
+    bridge = FakeBridge()
+    orig = bridge.set_location
+
+    async def spy(lat, lon, **kw):
+        # 第一次是 prepare 的预置；第二次是引擎的第一点。
+        # 两者的间隔就是静置时长。
+        seen.setdefault("calls", []).append(lat)
+        await orig(lat, lon, **kw)
+
+    bridge.set_location = spy
+    route = make_long_route(400.0, (30.5535, 103.9910))
+    asyncio.run(soak(bridge, route, duration_s=2.0, sample_rate_hz=5.0,
+                     speed_kmh=10.0, settle_s=0.5))
+    assert len(seen.get("calls", [])) >= 2, "预置 + 推进，至少两注"

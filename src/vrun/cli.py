@@ -331,7 +331,11 @@ def _cmd_soak(args: argparse.Namespace) -> int:
         noise_level=args.noise,
         seed=args.seed,
         to_end=args.to_end,
+        settle_s=args.settle,
         on_progress=progress,
+        on_prepared=lambda: print(
+            f"\n✅ 已预置到起点并静置 {args.settle:.0f} s —— "
+            "**现在可以在校园 App 里点开始跑步了**\n", flush=True),
     ))
 
     print()
@@ -551,6 +555,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_soak.add_argument("--noise", default="realistic",
                         choices=["off", "realistic", "strict"])
     p_soak.add_argument("--seed", type=int, default=0)
+    p_soak.add_argument("--settle", type=float, default=0.0,
+                        help="预置后的静置秒数。默认 0（压测用）；"
+                             "要让用户在 App 里操作时必须给足（works.md §4.3.2 "
+                             "要求 10–20 s，否则瞬移到起点那跳会落在记录窗口内）")
     p_soak.add_argument("--json", default=None,
                         help="把报告写成 JSON 落盘（默认不写）")
     p_soak.set_defaults(func=_cmd_soak)
