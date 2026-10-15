@@ -120,3 +120,50 @@ class TestDeviceCommands:
             assert (captured.err or captured.out).strip(), "失败时必须给出原因"
         # 有设备连着时 rc 应为 0；没有时为 2。两者都不许是「静默 0」
         assert rc in (0, 2)
+
+
+# ══════════════════════════════════════════════════════════════
+# --noise 档位必须与 GPSNoise.LEVELS 严格一致
+# ══════════════════════════════════════════════════════════════
+
+
+def _noise_choices(subcommand: str):
+    """取出某个子命令 ``--noise`` 的 choices。"""
+    action = next(
+        a for a in build_parser()._subparsers._group_actions  # noqa: SLF001
+        if hasattr(a, "choices") and a.choices and "soak" in a.choices
+    )
+    return action.choices[subcommand]._actions  # noqa: SLF001
+
+
+class TestNoiseLevelsStayInSync:
+    """★ 回归：``soak`` 的 ``--noise`` 曾手写成 ``strict``，而 ``LEVELS`` 是 ``harsh``。
+
+    argparse 放行 ``--noise strict``，几百毫秒后引擎才抛
+    「未知噪声档位」—— 错误信息指向的位置与真正的原因完全无关。
+    手写字符串列表必然会漂移；护栏只能从数据源比对。
+    """
+
+    def test每个子命令的档位都等于引擎的档位(self) -> None:
+        from vrun.noise import GPSNoise
+
+        for sub in ("estimate", "golden", "simulate", "gpx", "soak"):
+            actions = _noise_choices(sub)
+            noise_actions = [a for a in actions if a.dest == "noise"]
+            assert noise_actions, f"{sub} 没有 --noise"
+            for act in noise_actions:
+                assert sorted(act.choices) == sorted(GPSNoise.LEVELS), (
+                    f"{sub} 的 --noise 档位是 {act.choices}，"
+                    f"引擎只认 {sorted(GPSNoise.LEVELS)}"
+                )
+
+    def test任意档位都能被引擎接受(self) -> None:
+        """每个子命令给出的每一个档位，喂给引擎都必须被接受。"""
+        from vrun.noise import GPSNoise
+
+        for sub in ("estimate", "golden", "simulate", "gpx", "soak"):
+            for act in _noise_choices(sub):
+                if act.dest != "noise":
+                    continue
+                for level in act.choices:
+                    GPSNoise(level=level)  # 非法档位会在这里抛 ValueError

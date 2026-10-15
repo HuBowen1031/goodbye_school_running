@@ -30,11 +30,21 @@ from .estimate import (
     estimate,
     golden_rows,
 )
+from .noise import GPSNoise
 from .profile import PRESETS, SpeedProfile
-from .route import Route
+from .route import Route, circle_route
 
 # 江安校区附近的合成起点。**只用于离线演示**：真实使用时应由 GUI 从地图取点。
 DEFAULT_ORIGIN: tuple[float, float] = (30.5535, 103.9910)
+
+#: 噪声档位的合法取值。
+#:
+#: ⚠️ 必须从 :class:`~vrun.noise.GPSNoise` 推导，**不能手写字符串**。
+#:    soak 的 ``--noise`` 曾手写成 ``["off", "realistic", "strict"]``，
+#:    而 ``LEVELS`` 里的键是 ``harsh`` —— argparse 放行，引擎在几百毫秒后
+#:    才抛「未知噪声档位」。错误信息指向完全无关的地方。
+#:    从数据源推导让这类不同步**不可能发生**。
+NOISE_LEVELS: list[str] = sorted(GPSNoise.LEVELS)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -151,7 +161,6 @@ def _resolve_route(args: argparse.Namespace):
 def _build_engine(args, route):
     """按参数装配好引擎（纯计算，不碰设备）。"""
     from .engine import TrackEngine
-    from .noise import GPSNoise
 
     profile = SpeedProfile(v_bar=args.speed)
     noise = GPSNoise(level=args.noise, sample_rate=args.rate, seed=args.seed)
@@ -277,6 +286,73 @@ def _cmd_device_status(args: argparse.Namespace) -> int:  # noqa: ARG001
     return 0
 
 
+def _parse_center(text: str) -> tuple[float, float]:
+    """``"纬度,经度"`` → ``(lat, lon)``。
+
+    纬度在前是刻意的：绝大多数地图 App 显示的顺序也是纬度在前，
+    用户从地图上抄下来能直接用，不用自己在脑子里换一次。
+    """
+    parts = [p.strip() for p in str(text).split(",")]
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError(
+            f"--center 要写成「纬度,经度」，收到 {text!r}"
+        )
+    try:
+        lat, lon = float(parts[0]), float(parts[1])
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"--center 的两个分量都得是数字，收到 {text!r}"
+        ) from exc
+    if not (-90.0 <= lat <= 90.0):
+        raise argparse.ArgumentTypeError(f"纬度 {lat} 超出 [-90, 90]")
+    if not (-180.0 <= lon <= 180.0):
+        raise argparse.ArgumentTypeError(f"经度 {lon} 超出 [-180, 180]")
+    return lat, lon
+
+
+def _build_soak_route(args, speed: float) -> tuple[Route, object]:
+    """构造压测路线。返回 ``(route, preview_or_None)``。
+
+    给了 ``--center`` 就走**圆模式**：以该点为圆心重复同一个圆。
+    """
+    if not getattr(args, "center", None):
+        return make_long_route_for_soak(args, speed), None
+
+    from .preview import plan_laps, preview
+
+    center = _parse_center(args.center)
+    diameter = args.diameter
+    fence = args.fence_radius
+
+    if args.laps:
+        route = circle_route(center, diameter, laps=args.laps)
+        pv = preview(
+            route, center=center, diameter_m=diameter, laps=args.laps,
+            speed_kmh=speed, rate_hz=args.rate, noise_level=args.noise,
+            seed=args.seed, smooth_s=args.smooth, radius_limit_m=fence,
+        )
+    else:
+        pv = plan_laps(
+            center, diameter, speed_kmh=speed, rate_hz=args.rate,
+            noise_level=args.noise, seed=args.seed, smooth_s=args.smooth,
+        )
+        # 把用户给的围栏半径补回去 —— plan_laps 搜索时不带它
+        pv.radius_limit_m = fence
+        route = circle_route(center, diameter, laps=pv.laps)
+    return route, pv
+
+
+def make_long_route_for_soak(args, speed: float) -> Route:
+    """定时/到点两种模式各自的旧路线构造逻辑（圆模式之外的分支）。"""
+    from .soak import make_long_route
+
+    if args.to_end:
+        distance = args.distance if args.distance is not None else 3000.0
+        return make_long_route(distance, DEFAULT_ORIGIN)
+    planned_m = speed / 3.6 * args.minutes * 60.0
+    return make_long_route(planned_m * 2.0, DEFAULT_ORIGIN)
+
+
 def _cmd_soak(args: argparse.Namespace) -> int:
     """真机长跑压测（M4 / works.md §6 M2 那条「10 分钟统计丢失点与延迟分布」）。
 
@@ -297,14 +373,33 @@ def _cmd_soak(args: argparse.Namespace) -> int:
 
     speed = args.speed if args.speed is not None else 10.0
 
-    if args.to_end:
-        # 跑到终点：路线长度就是**要跑的距离**，由 --distance 给。
-        distance = args.distance if args.distance is not None else 3000.0
-        route = make_long_route(distance, DEFAULT_ORIGIN)
-    else:
-        # 定时模式：路线给 2 倍余量，保证任何速度下都不会「先到终点」
-        planned_m = speed / 3.6 * args.minutes * 60.0
-        route = make_long_route(planned_m * 2.0, DEFAULT_ORIGIN)
+    route, pv = _build_soak_route(args, speed)
+
+    # ── 离线预览：不碰设备 ──
+    # 「要不要占手机 18 分钟」这个决定，必须能在**不占**的前提下做出。
+    if args.dry_run and pv is None:
+        # 非圆模式没有可推算的预览。静默返回 0 等于告诉调用方
+        # 「预览通过了」—— 那比直接报错糟糕得多。
+        print("--dry-run 需要配合 --center（圆模式）使用："
+              "非圆模式没有可离线推算的预览。", file=sys.stderr)
+        return 2
+
+    if pv is not None:
+        from .preview import preview_lines, rule_table_lines
+
+        print(f"★ 离线预览（未连接设备）—— 圆心 {args.center}，"
+              f"直径 {args.diameter:g} m，以 {args.smooth:g} s 平滑口径为准\n")
+        for line in preview_lines(pv):
+            print(line)
+        print()
+        for line in rule_table_lines(pv):
+            print(line)
+        print()
+
+        if args.dry_run:
+            return 0
+        print("以上是**离线推算**，只说明「按这些参数注入会是什么样」，"
+              "不代表真机注入成功。接下来才真的连手机跑。\n")
 
     print("设备层就绪，连线中…")
     bridge = DeviceBridge()
@@ -484,7 +579,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_est = sub.add_parser("estimate", help="单点预览：配速 / ETA / 安全带 / 判定预期")
     p_est.add_argument("--speed", type=float, default=10.0, help="目标速度 km/h（默认 10）")
     p_est.add_argument("--distance", type=float, default=D_MIN_M, help="目标距离 米（默认 3000）")
-    p_est.add_argument("--noise", choices=sorted(("off", "realistic", "harsh")),
+    p_est.add_argument("--noise", choices=NOISE_LEVELS,
                        default="realistic", help="噪声档位（默认 realistic）")
     p_est.add_argument("--rate", type=float, default=1.0, help="采样率 Hz（默认 1）")
     p_est.add_argument("--json", action="store_true", help="额外打印 JSON")
@@ -493,7 +588,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ── golden ──
     p_gold = sub.add_parser("golden", help="works.md §5.4 基准表（11 行）")
     p_gold.add_argument("--distance", type=float, default=D_MIN_M)
-    p_gold.add_argument("--noise", choices=sorted(("off", "realistic", "harsh")),
+    p_gold.add_argument("--noise", choices=NOISE_LEVELS,
                         default="realistic")
     p_gold.add_argument("--rate", type=float, default=1.0)
     p_gold.add_argument("--json", default=None, help="把基准表写成 JSON 文件")
@@ -506,7 +601,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--distance", type=float, default=None,
         help="目标距离 米。缺省时：给了 --route 就保持路线原长，没给则用 3000",
     )
-    p_sim.add_argument("--noise", choices=sorted(("off", "realistic", "harsh")),
+    p_sim.add_argument("--noise", choices=NOISE_LEVELS,
                        default="realistic")
     p_sim.add_argument("--rate", type=float, default=1.0)
     p_sim.add_argument("--seed", type=int, default=0)
@@ -520,7 +615,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_gpx.add_argument("--speed", type=float, default=10.0)
     p_gpx.add_argument("--distance", type=float, default=None,
                        help="目标距离 米。缺省时：给了 --route 就保持路线原长，没给则用 3000")
-    p_gpx.add_argument("--noise", choices=sorted(("off", "realistic", "harsh")),
+    p_gpx.add_argument("--noise", choices=NOISE_LEVELS,
                        default="realistic")
     p_gpx.add_argument("--rate", type=float, default=1.0)
     p_gpx.add_argument("--seed", type=int, default=0)
@@ -553,12 +648,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_soak.add_argument("--speed", type=float, default=None,
                         help="速度 km/h（默认 10）")
     p_soak.add_argument("--noise", default="realistic",
-                        choices=["off", "realistic", "strict"])
+                        choices=NOISE_LEVELS)
     p_soak.add_argument("--seed", type=int, default=0)
     p_soak.add_argument("--settle", type=float, default=0.0,
                         help="预置后的静置秒数。默认 0（压测用）；"
                              "要让用户在 App 里操作时必须给足（works.md §4.3.2 "
                              "要求 10–20 s，否则瞬移到起点那跳会落在记录窗口内）")
+    p_soak.add_argument("--center", default=None,
+                        help="圆心，格式「纬度,经度」。给了就启用**圆模式**："
+                             "以该点为圆心重复同一个圆，圈与圈几何完全重合")
+    p_soak.add_argument("--diameter", type=float, default=30.0,
+                        help="圆的直径（米），仅圆模式有效。默认 30")
+    p_soak.add_argument("--laps", type=int, default=0,
+                        help="固定圈数。仅圆模式有效；"
+                             "缺省（0）= 自动搜出「两种口径都过 R1/R4 且余量 2%%」的最小圈数")
+    p_soak.add_argument("--fence-radius", type=float, default=None,
+                        help="电子围栏半径（米）。仅用于报告里判定会不会出界；"
+                             "不给就只报最远距离，不下结论")
+    p_soak.add_argument("--smooth", type=float, default=5.0,
+                        help="假定 App 的平滑窗口（秒），仅圆模式有效。默认 5")
+    p_soak.add_argument("--dry-run", action="store_true",
+                        help="只跑离线预览并打印 App 口径的判定，**完全不连手机**")
     p_soak.add_argument("--json", default=None,
                         help="把报告写成 JSON 落盘（默认不写）")
     p_soak.set_defaults(func=_cmd_soak)

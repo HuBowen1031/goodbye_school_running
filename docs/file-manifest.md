@@ -8,14 +8,14 @@
 >
 > | 项 | 值 |
 > | --- | --- |
-> | 版本 | **v10（2026-10-15）** |
-> | 对应 `works.md` | v7 |
+> | 版本 | **v11（2026-10-15）** |
+> | 对应 `works.md` | v9 |
 > | 语言约定 | 代码注释、文档、GUI 文案**一律中文** |
-> | 测试规模 | Python **328 passed** / Swift **77 passed** |
+> | 测试规模 | Python **385 passed** / Swift **77 passed** |
 >
-> ⚠️ **重要前提（v10 更新）**：本文 v1 写作时仓库内**尚无任何代码文件**，
+> ⚠️ **重要前提（v11 更新）**：本文 v1 写作时仓库内**尚无任何代码文件**，
 > 全文描述的都是**待建文件的规格**。截至 v7，**M1 / M2 / M3 均已落地**，
-> `src/vrun/` 14 个文件与 `app/VRun/` 14 个源码文件全部有实现（`git ls-files` 逐个核对，v8 新增 `LiveMetrics.swift`）。
+> `src/vrun/` **16** 个文件与 `app/VRun/` **14** 个源码文件全部有实现（`git ls-files` 逐个核对，v8 新增 `LiveMetrics.swift`，v11 新增 `preview.py`）。
 >
 > 因此本文现在的地位是：
 >
@@ -47,7 +47,7 @@
 
 **一句话版本**
 
-- 想要「**能离线测的数学**」→ `src/vrun/` 的 ① 纯计算层，6 个文件
+- 想要「**能离线测的数学**」→ `src/vrun/` 的 ① 纯计算层，**7** 个文件
 - 想要「**能控制手机**」→ `src/vrun/device.py` + `src/vrun/safety.py`
 - 想要「**滑块面板**」→ `app/VRun/Sources/VRunApp/` 里带 ★ 的 4 个文件
 - 想要「**证明它是对的**」→ `tests/` + `tests/golden/estimate.json`
@@ -162,7 +162,7 @@ flowchart TD
 
 ## 4. Python 侧车 · `src/vrun/`
 
-包名 `vrun`，**14 个文件**。
+包名 `vrun`，**16 个文件**。
 
 其中**只有 3 个文件与设备或进程强相关**（`device.py` / `safety.py` / `cli.py`），其余 11 个都能在没手机的机器上完整运行与测试。
 
@@ -178,7 +178,7 @@ flowchart TD
 
 ---
 
-### 4.1 ① 纯计算层（6 个文件）
+### 4.1 ① 纯计算层（7 个文件）
 
 > 这一层是**风险最低、价值最高**的部分：不需要 iPhone、不需要 Xcode、不需要联网，
 > `pytest` 秒级跑完。**M1 阶段全部可交付。**
@@ -232,7 +232,7 @@ def bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 | 项 | 内容 |
 | --- | --- |
-| **职责** | 折线路线模型；累计弧长表；`point_at(s)` 按弧长取点；按目标距离等比缩放；JSON 读写 |
+| **职责** | 折线路线模型；累计弧长表；`point_at(s)` 按弧长取点；按目标距离等比缩放；**圆形路线与重复圈**；JSON 读写 |
 | **为什么存在** | 引擎只推进一个标量 `s`（弧长），几何细节全部封在这里。这是「速度 = 推进弧长的速率」这一核心设计的落地处（works.md §2.2） |
 | **依赖** | `geo.py` |
 | **里程碑** | M1 |
@@ -507,6 +507,48 @@ def safety_band(sigma_v: float, profile: SpeedProfile,
 
 **测试方式**：`tests/test_estimate.py`——逐行断言 §5.4 全表（11 行 golden values）；
 严苛档返回 `None`；贴线设定不被拒绝。
+
+---
+
+#### 4.1.7 `src/vrun/preview.py` — 离线推算「校园 App 会看到什么」★★
+
+| 项 | 内容 |
+| --- | --- |
+| **职责** | 不连手机跑完整条轨迹，算出校园 App 在 R1–R5 下的判定（**两种口径**）、电子围栏最远距离、平滑窗口敏感性 |
+| **为什么存在** | 「要不要占手机 19 分钟」这个决定，必须能在**不占**的前提下做出。而 App 的距离 ≠ 我们的弧长，且差多少**只能算** |
+| **依赖** | `engine.py`（假时钟 `simulate_offline`）、`geo.py`、`noise.py`、`profile.py`、`estimate.py`、`route.py` |
+| **里程碑** | M4 |
+
+**接口**
+
+```python
+def preview(route, *, center, diameter_m, laps=1, speed_kmh=10.0, rate_hz=1.0,
+            noise_level="realistic", seed=0, smooth_s=5.0,
+            radius_limit_m=None, sweep_windows=()) -> PreviewResult: ...
+
+def plan_laps(center, diameter_m, *, speed_kmh=10.0, min_laps=1, max_laps=400,
+              min_margin=0.02, ...) -> PreviewResult: ...
+    """搜出「R1 与 R4 在两种口径下都过、且 R1 余量 ≥ min_margin」的最小圈数。"""
+
+def checks(p, model: str) -> list[Check]: ...
+    """model = "raw"（App 不滤波）/ "smooth"（App 做 p.smooth_s 秒滑动平均）。"""
+```
+
+**设计要点**
+
+- **为什么必须两种口径**：我们**不知道**校园 App 内部有没有做平滑滤波，也**不去分析**它。
+  两种都算出来，跑完看 App 报的数落在哪一边，**顺带就把它的滤波口径反推出来了** ——
+  这比任何黑盒分析都直接，而且完全合规（只看它自己显示的数字）。
+- **为什么 R3 不进 `plan_laps`**：逐点最低速随采样点增多而**变差**（噪声差分能抵消前进量），
+  写进搜索条件会得到无解目标，一路撞到 `max_laps`（实测 400 圈 / 113 秒）。
+- **围栏参考系必须用真圆心**，不是引擎内部那个「路线首点」——
+  路线首点在圆的东侧、离圆心 15 m，拿它当原点会让整个围栏判定偏移一整个半径。
+- ⚠️ `checks()` 的 `margin()` 分母用**边界自身的量级**。
+  第一版写成 `gap / (value - lo)`，分子分母同一个数 ⇒ **恒等于 1.0**，
+  「压线」与「稳过」在搜索眼里完全一样（F17）。
+
+**测试方式**：`tests/test_preview.py`（32 条）——余量分母、围栏参考系、
+窗口单调性、弦<弧、种子可复现性、圈数稳健性；配 **12 组变异**全部命中。
 
 ---
 
@@ -816,6 +858,8 @@ vrun serve                                    # JSON Lines 走 stdin/stdout
 | `Sources/VRunApp/MainView.swift` | 窗口布局（依草图）：可拖宽左栏 + 右侧竖排钢笔工具栏 + 右下状态浮窗 + 四角 overlay | M3 | ✅ |
 | `Sources/VRunApp/Style.swift` | Liquid Glass 设计令牌、`GlassPanel` / `PanelHeader` / `Chip` / `KV` 组件 | M3 | ✅ |
 | `src/vrun/soak.py` ★★ | **M4 真机长跑压测**（`vrun soak`）：无头驱动 `prepare → start → 到点 stop → cleanup`，产出「丢失点数 + 延迟分位数 + 覆盖时长 + 清理确认」四件套。判定四红线；**不走 GUI**，压测不依赖人工点击。见 findings F15 |
+| `src/vrun/preview.py` ★★ | **M4 离线预览**（`vrun soak --dry-run`）：不连手机跑完整轨迹，算出校园 App 在 R1–R5 下的判定（逐点 / 平滑**两种口径**）+ 电子围栏最远距离 + 平滑窗口敏感性。0.2 秒出 19 分钟的结论。见 F16 / F17 |
+| `src/vrun/route.py` 的 `circle_points` / `circle_route` / `circle_route_to` ★★ | **同一个圆重复 N 圈，几何完全重合** ⇒ 围栏半径（15 m）与总里程（3.2 km）解耦。顶点严格在圆上、弦恒在圆内 ⇒ 无噪声时离圆心 ≤ 半径。见 F16 |
 | `Sources/VRunApp/LiveMetrics.swift` ★★ | 会话实时读数的**纯模型**：`tick`/`progress` 的摄入、派生量（剩余/完成度/配速）与显示文案。不 import SwiftUI 视图，可被单测直接驱动（F14） | M3 | ✅ |
 | `Sources/VRunApp/DeviceStatusCard.swift` ★ | 侧栏顶部的设备状态卡：红/黄/绿三态圆点 + 强调色「刷新」按钮 + 失败原因详情（`user_found_problem.md` 第 2 条） | M3 | ✅ |
 | `Tests/VRunAppTests/PreviewMathTests.swift` | **跨语言契约测试**：与 `tests/golden/estimate.json` 同源的 §5.4 基准表断言（18 条） | M3 | ✅ |
@@ -917,7 +961,7 @@ vrun serve                                    # JSON Lines 走 stdin/stdout
 
 ---
 
-## 6. 测试 · `tests/`（14 个文件）
+## 6. 测试 · `tests/`（**16** 个文件）
 
 | 文件 | 覆盖内容 | 里程碑 |
 | --- | --- | --- |
@@ -935,6 +979,9 @@ vrun serve                                    # JSON Lines 走 stdin/stdout
 | `tests/test_safety.py` ★ | 幂等清理（`_cleaned` 先置位再清理）；atexit / signal / finally 三条路径不重复动作；主循环死时走子进程且**显式传 `PYTHONPATH`** | M2 |
 | `tests/test_device.py` ★ | ① 纯计算层**绝不** import `pymobiledevice3`（干净子进程里查）；未连接时 `clear`/`aclose` 不抛；`status()` 返回**副本**；参数校验在触碰设备前就拒 | M2 |
 | `tests/test_session.py` ★ | 状态迁移顺序；**背压**（注入慢则引擎慢）；`stop` 迟 1 s = 多注入一个点；暂停时位置不动；`stop` ≠ `cleanup` | M2 |
+| `tests/test_circle.py` ★★ | **几何保证**：折线上任何一点离圆心 ≤ 半径（20 万点采样）；顶点确实在半径上（防「保守地画小」）；**圈与圈几何完全重合**（防退化成螺旋）；圈数向上取整。22 条 | M4 |
+| `tests/test_preview.py` ★★ | 余量分母（F17 回归）；围栏参考系用真圆心；窗口越长衰减越狠；**关噪声时弦仍比弧短 0.14%**；种子可复现与稳健性；圈数搜索不纳入 R3。32 条 | M4 |
+| `tests/test_cli.py` 的 `--noise` 同步组 ★ | 四个子命令的档位**逐一**与 `GPSNoise.LEVELS` 比对，且**逐个喂给引擎**验证可接受（F18 回归） | M4 |
 
 ### 6.1 关于 `golden/estimate.json`
 
@@ -1130,6 +1177,7 @@ environment.yml            ← conda 层：python 版本、conda 包
 | 2026-10-14 | **v6** | **修 F12「测试偷连真机」+ 计数纠偏**：① 新增 §6.2「测试绝不碰真机」纪律，护栏做在 fixture 层；② §7 脚本 5 → **3 个**（删除从未实现的 `bootstrap_env.sh` / `preflight.sh`）；③ `src/vrun` 计数 13 → **14**、§4.3 小节顺序修正（4.3.4 原先物理位置排在 4.3.2 之前）；④ §4.3.3 的「占位 / 待建」描述改为实装态，补上漏记的 `gpx` 子命令；⑤ §3 `environment.yml` 「待建」→「已存在」；⑥ §6 补齐 M2 三条测试文件（原表 11 行 / 实际 14 个） |
 | 2026-10-14 | **v5** | **M2 完成 + 真机验证通过**：① 新增 §4.3.4 `session.py`（会话状态机 + 跨线程边界的三个解法），编排层 4 → 5 个文件；② §4.2 标注「真机 6 点移动测试通过，用户肉眼确认」；③ 新增 `tests/test_session.py`（23 条），测试 13 → 14 个文件、规模计数 53 → 54；④ 引入 findings **F11**（三个静默失效的会话 bug） |
 | 2026-10-14 | **v4** | **M2 设备层落地**（⚠️ 当时真机一行未验）：① §4.2.1 补「实测核对过的上游 API」表 —— `set()` 只收经纬度（由此解释 M0 的 altitude 恒为 0）、隧道是**进程级单例**、DDI 降级为尽力而为的探测；② §4.2.2 补 atexit/signal 的**同步 × async 技术难点**与两条解法，并说明 `panic-clear.sh` 是保险链的最后一环而非可选脚本；③ `device.status` / `device.cleanup` 在 ipc 与 CLI 中实装；④ 测试 11 → 13 个文件、规模计数 51 → 53 |
+| 2026-10-15 | **v11** | **M4 圈模式 + 离线预览（+ F16/F17/F18）**：① 新增 `src/vrun/preview.py`（§4.1.7）—— 不连手机算校园 App 在 R1–R5 下的判定（**逐点 / 平滑两种口径**）+ 围栏最远距离；② `route.py` 新增 `circle_points` / `circle_route` / `circle_route_to`：**同一个圆重复 N 圈，几何完全重合**，把围栏半径（15 m）与里程（3.2 km）解耦；③ `soak` 新增 `--center/--diameter/--laps/--fence-radius/--smooth/--dry-run`，`plan_laps` 自动搜出「两种口径都过 R1/R4 且余量 ≥ 2%」的最小圈数（= 34）；④ 新增 `tests/test_circle.py`（22 条）+ `tests/test_preview.py`（32 条）+ `test_cli.py` 的 `--noise` 同步组；⑤ **12 组变异全部命中**；⑥ `route.py` 职责与 §4.1 / §6 文件数同步；⑦ 测试规模 328 → **385** |
 | 2026-10-15 | **v10** | **M4 到点模式 + 强杀第一档**：① `RunSession` 新增 `wait_until_finished(timeout)` —— 原 `_wait_task` 是会话内部快路径、固定 5 s 就返回（F15 的竞态根源），新方法只服务「等一次长运行自然跑完」；② `vrun soak --to-end` 跑完整条路线才停，并比对预览 ETA 与实际用时（差 < 2 s = §6 M4 验收线）；③ 测试 317 → **328**；④ 真机验证 `kill -9` GUI 后侧车随管道断开自动退出、**零孤儿零残留**（强杀第一档，无会话态） |
 | 2026-10-15 | **v9** | **M4 压测工具（+ F15）**：① `device.py` 新增 `InjectionStats` —— 记录**每一次尝试**的注入耗时（含超时），刻意不放进每秒推给 GUI 的 `DeviceStatus`；② 新增 `src/vrun/soak.py` 与 `vrun soak --minutes N`；③ `tests/test_soak.py` 15 条（判定分支 + 无头整链路）；④ 规模 302 → **317** Python；⑤ 引入 findings **F15**（压测工具本身会骗人：`_wait_task` 5 s 上限导致「引擎还在注入就清理」） |
 | 2026-10-15 | **v8** | **M3 收口（接通实时数据线 + F14）**：① 新增 `LiveMetrics.swift`（实时读数纯模型）；② `SidecarEvent` 补 7 个数值字段；③ `SessionController` 接上 `tick`/`progress`，`prepare` 清零 / `stop` 冻结；④ HUD 新增「运行中」区块（6 行），并修掉 236 pt 宽度下的折行；⑤ `RouteCanvas` 加当前位置 annotation（只改坐标不重建 view）；⑥ 新增**跨语言基准** `tests/golden/session_events.json` 与两侧测试；⑦ 规模 55 → **77** Swift、298 → **302** Python；⑧ 引入 findings **F14**（`Decodable` 成功 ≠ 字段对上了） |
