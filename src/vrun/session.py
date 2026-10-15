@@ -475,3 +475,31 @@ class RunSession:
         except Exception:
             pass          # 引擎自己已经报过错了
         self._task = None
+
+    async def wait_until_finished(self, timeout: float) -> bool:
+        """等引擎线程**真的跑完**。返回是否等到了。
+
+        ★ 与 :meth:`_wait_task` 的区别不是「多等一会儿」，而是**用途不同**
+
+        ``_wait_task`` 是会话内部的**快路径**：调用它之前（``stop`` /
+        ``cleanup``）已经先置了停止标志，引擎会在一两个采样周期内退出，
+        所以 5 秒足够。它**故意不等** —— 引擎还在正常跑的时候，
+        5 秒后它就返回，调用方若接着去清理，就会出现「引擎仍在注入，
+        位置却被清掉」的竞态（findings **F15** 实测踩过）。
+
+        而外部要等的是「一次 18 分钟的运行自然跑到终点」，
+        这种情况下 5 秒显然不够，必须显式给一个够长的 ``timeout``。
+
+        :param timeout: 最多等多少秒。
+        :return: ``True`` = 等到了；``False`` = 超时或引擎抛异常。
+        """
+        if self._task is None:
+            return True
+        try:
+            await asyncio.wait_for(asyncio.shield(self._task), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            log.warning("引擎线程在 %.0f s 内未结束", timeout)
+            return False
+        except Exception:
+            return False      # 引擎自己已经报过错了

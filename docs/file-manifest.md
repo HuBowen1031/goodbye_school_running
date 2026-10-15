@@ -8,12 +8,12 @@
 >
 > | 项 | 值 |
 > | --- | --- |
-> | 版本 | **v9（2026-10-15）** |
+> | 版本 | **v10（2026-10-15）** |
 > | 对应 `works.md` | v7 |
 > | 语言约定 | 代码注释、文档、GUI 文案**一律中文** |
-> | 测试规模 | Python **317 passed** / Swift **77 passed** |
+> | 测试规模 | Python **328 passed** / Swift **77 passed** |
 >
-> ⚠️ **重要前提（v9 更新）**：本文 v1 写作时仓库内**尚无任何代码文件**，
+> ⚠️ **重要前提（v10 更新）**：本文 v1 写作时仓库内**尚无任何代码文件**，
 > 全文描述的都是**待建文件的规格**。截至 v7，**M1 / M2 / M3 均已落地**，
 > `src/vrun/` 14 个文件与 `app/VRun/` 14 个源码文件全部有实现（`git ls-files` 逐个核对，v8 新增 `LiveMetrics.swift`）。
 >
@@ -1130,6 +1130,7 @@ environment.yml            ← conda 层：python 版本、conda 包
 | 2026-10-14 | **v6** | **修 F12「测试偷连真机」+ 计数纠偏**：① 新增 §6.2「测试绝不碰真机」纪律，护栏做在 fixture 层；② §7 脚本 5 → **3 个**（删除从未实现的 `bootstrap_env.sh` / `preflight.sh`）；③ `src/vrun` 计数 13 → **14**、§4.3 小节顺序修正（4.3.4 原先物理位置排在 4.3.2 之前）；④ §4.3.3 的「占位 / 待建」描述改为实装态，补上漏记的 `gpx` 子命令；⑤ §3 `environment.yml` 「待建」→「已存在」；⑥ §6 补齐 M2 三条测试文件（原表 11 行 / 实际 14 个） |
 | 2026-10-14 | **v5** | **M2 完成 + 真机验证通过**：① 新增 §4.3.4 `session.py`（会话状态机 + 跨线程边界的三个解法），编排层 4 → 5 个文件；② §4.2 标注「真机 6 点移动测试通过，用户肉眼确认」；③ 新增 `tests/test_session.py`（23 条），测试 13 → 14 个文件、规模计数 53 → 54；④ 引入 findings **F11**（三个静默失效的会话 bug） |
 | 2026-10-14 | **v4** | **M2 设备层落地**（⚠️ 当时真机一行未验）：① §4.2.1 补「实测核对过的上游 API」表 —— `set()` 只收经纬度（由此解释 M0 的 altitude 恒为 0）、隧道是**进程级单例**、DDI 降级为尽力而为的探测；② §4.2.2 补 atexit/signal 的**同步 × async 技术难点**与两条解法，并说明 `panic-clear.sh` 是保险链的最后一环而非可选脚本；③ `device.status` / `device.cleanup` 在 ipc 与 CLI 中实装；④ 测试 11 → 13 个文件、规模计数 51 → 53 |
+| 2026-10-15 | **v10** | **M4 到点模式 + 强杀第一档**：① `RunSession` 新增 `wait_until_finished(timeout)` —— 原 `_wait_task` 是会话内部快路径、固定 5 s 就返回（F15 的竞态根源），新方法只服务「等一次长运行自然跑完」；② `vrun soak --to-end` 跑完整条路线才停，并比对预览 ETA 与实际用时（差 < 2 s = §6 M4 验收线）；③ 测试 317 → **328**；④ 真机验证 `kill -9` GUI 后侧车随管道断开自动退出、**零孤儿零残留**（强杀第一档，无会话态） |
 | 2026-10-15 | **v9** | **M4 压测工具（+ F15）**：① `device.py` 新增 `InjectionStats` —— 记录**每一次尝试**的注入耗时（含超时），刻意不放进每秒推给 GUI 的 `DeviceStatus`；② 新增 `src/vrun/soak.py` 与 `vrun soak --minutes N`；③ `tests/test_soak.py` 15 条（判定分支 + 无头整链路）；④ 规模 302 → **317** Python；⑤ 引入 findings **F15**（压测工具本身会骗人：`_wait_task` 5 s 上限导致「引擎还在注入就清理」） |
 | 2026-10-15 | **v8** | **M3 收口（接通实时数据线 + F14）**：① 新增 `LiveMetrics.swift`（实时读数纯模型）；② `SidecarEvent` 补 7 个数值字段；③ `SessionController` 接上 `tick`/`progress`，`prepare` 清零 / `stop` 冻结；④ HUD 新增「运行中」区块（6 行），并修掉 236 pt 宽度下的折行；⑤ `RouteCanvas` 加当前位置 annotation（只改坐标不重建 view）；⑥ 新增**跨语言基准** `tests/golden/session_events.json` 与两侧测试；⑦ 规模 55 → **77** Swift、298 → **302** Python；⑧ 引入 findings **F14**（`Decodable` 成功 ≠ 字段对上了） |
 | 2026-10-15 | **v7** | **M3 收口（GUI 改造 + F13）**：① 新增 `DeviceStatusCard.swift`（刷新按钮 + 三态提示，`user_found_problem.md` 第 2 条）；② `RouteModel.startAnchor` 把绿圈语义改为「路线起点」（第 1 条）；③ `Models.swift` 的 `SidecarEvent` 补 9 个字段（含成对的 `lat`/`lon`）；④ `MainView` 提升为 `@StateObject` 持有 `RouteModel`；⑤ §5 补入 4 个新测试文件，其中 `GreenDotMapKitTests` 是**首个真喂 MapKit 的集成测试**；⑥ 规模 18 → **55** Swift、293 → **298** Python；⑦ 引入 findings **F13**（崩溃栈顶符号不是真凶 + 纯逻辑测试的盲区） |

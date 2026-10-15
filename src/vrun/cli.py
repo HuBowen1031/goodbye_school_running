@@ -31,6 +31,7 @@ from .estimate import (
     golden_rows,
 )
 from .profile import PRESETS, SpeedProfile
+from .route import Route
 
 # 江安校区附近的合成起点。**只用于离线演示**：真实使用时应由 GUI 从地图取点。
 DEFAULT_ORIGIN: tuple[float, float] = (30.5535, 103.9910)
@@ -295,9 +296,15 @@ def _cmd_soak(args: argparse.Namespace) -> int:
         return 2
 
     speed = args.speed if args.speed is not None else 10.0
-    # 路线给 2 倍余量，保证任何速度下都不会「先到终点」而提前结束压测
-    planned_m = speed / 3.6 * args.minutes * 60.0
-    route = make_long_route(planned_m * 2.0, DEFAULT_ORIGIN)
+
+    if args.to_end:
+        # 跑到终点：路线长度就是**要跑的距离**，由 --distance 给。
+        distance = args.distance if args.distance is not None else 3000.0
+        route = make_long_route(distance, DEFAULT_ORIGIN)
+    else:
+        # 定时模式：路线给 2 倍余量，保证任何速度下都不会「先到终点」
+        planned_m = speed / 3.6 * args.minutes * 60.0
+        route = make_long_route(planned_m * 2.0, DEFAULT_ORIGIN)
 
     print("设备层就绪，连线中…")
     bridge = DeviceBridge()
@@ -311,13 +318,19 @@ def _cmd_soak(args: argparse.Namespace) -> int:
         pct = done / total * 100 if total else 0.0
         print(f"  …{done}/{total} 点（{pct:.0f}%）", flush=True)
 
+    # 到点模式下 duration_s 只用作「引擎超时上限」的基数
+    budget = args.minutes * 60.0
+    if args.to_end:
+        budget = route.length() / (speed / 3.6) * 1.6 + 120.0
+
     rep = asyncio.run(soak(
         bridge, route,
-        duration_s=args.minutes * 60.0,
+        duration_s=budget,
         sample_rate_hz=args.rate,
         speed_kmh=speed,
         noise_level=args.noise,
         seed=args.seed,
+        to_end=args.to_end,
         on_progress=progress,
     ))
 
@@ -329,8 +342,14 @@ def _cmd_soak(args: argparse.Namespace) -> int:
         write_report(rep, args.json)
         print(f"\n报告已写出 {args.json}")
 
-    return 0 if (rep.dropped == 0 and rep.reached_duration
-                 and not rep.error and rep.cleared) else 1
+    if args.to_end:
+        ok = (rep.dropped == 0 and rep.route_completed and rep.cleared
+              and rep.eta_error_s is not None
+              and abs(rep.eta_error_s) < rep.eta_tolerance_s)
+    else:
+        ok = (rep.dropped == 0 and rep.reached_duration
+              and not rep.error and rep.cleared)
+    return 0 if ok else 1
 
 
 def _cmd_panic_clear(args: argparse.Namespace) -> int:  # noqa: ARG001
@@ -519,7 +538,13 @@ def build_parser() -> argparse.ArgumentParser:
         "soak",
         help="[M4] 真机长跑压测：统计丢失点数与注入延迟分布")
     p_soak.add_argument("--minutes", type=float, default=5.0,
-                        help="压测时长（分钟）。默认 5；works.md 要求 10")
+                        help="定时模式的压测时长（分钟）。默认 5")
+    p_soak.add_argument("--to-end", action="store_true",
+                        help="跑到路线终点才停（M4 的 3 km 验收用这个），"
+                             "并比对预览 ETA 与实际用时")
+    p_soak.add_argument("--distance", type=float, default=None,
+                        help="--to-end 的路线长度（米）。"
+                             "缺省 3000（works.md §6 M4 的验收距离）")
     p_soak.add_argument("--rate", type=float, default=1.0, help="采样率 Hz")
     p_soak.add_argument("--speed", type=float, default=None,
                         help="速度 km/h（默认 10）")

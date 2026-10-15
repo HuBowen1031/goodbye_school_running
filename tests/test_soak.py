@@ -21,6 +21,7 @@ import pytest
 from vrun.device import InjectionError, InjectionStats
 from vrun.route import Route
 from vrun.safety import SafetyGuard
+from vrun.profile import SpeedProfile
 from vrun.soak import SoakResult, make_long_route, report_lines, soak, write_report
 
 
@@ -300,3 +301,139 @@ def test报告能落盘且含判定所需字段(tmp_path):
               "latency_ms", "error"):
         assert k in data, f"报告缺字段 {k} —— M4 对账要靠它"
     assert data["dropped"] == 0
+
+
+# ══════════════════════════════════════════════════════════════════
+#  到点模式（--to-end）—— M4 的 3 km 验收走这条
+#
+#  ⚠️ 判据与定时模式**完全不同**，不能互相代偿：
+#     · 定时模式问「这段时间稳不稳」⇒ 红线是丢失点数 + 覆盖时长
+#     · 到点模式问「整条轨迹跑完对不对」⇒ 红线是**跑到了终点 + ETA 准**
+# ══════════════════════════════════════════════════════════════════
+
+
+def _to_end() -> SoakResult:
+    return SoakResult(
+        duration_s=1902.0, sample_rate_hz=1.0, speed_kmh=10.0,
+        route_m=3000.0, to_end=True,
+        planned_eta_s=1081.2, eta_error_s=1.35,
+        wall_s=1084.0, planned_samples=1903, produced_samples=1081,
+        injected=1082, dropped=0, cleared=True,
+        planned_s=3000.0, produced_s=3000.0, covered_s=1082.55,
+        route_completed=True,
+        latency={"attempts": 1082, "timeouts": 0, "p50_ms": 5.0,
+                 "p90_ms": 7.0, "p99_ms": 21.0, "max_ms": 51.0,
+                 "min_ms": 2.0, "mean_ms": 5.7},
+    )
+
+
+def test到点模式全绿时报通过():
+    assert "✅ 通过" in "\n".join(report_lines(_to_end()))
+
+
+def test到点模式没跑到终点不算通过():
+    """★ 这条是「只跑了一半却报通过」的最后一道防线。"""
+    r = _to_end()
+    r.route_completed = False
+    text = "\n".join(report_lines(r))
+    assert "❌ 未通过" in text
+    assert "没跑到路线终点" in text
+
+
+def test到点模式ETA超差不算通过():
+    """works.md §6 M4 的验收线：预览 ETA 与实际用时差 < 2 s。"""
+    r = _to_end()
+    r.eta_error_s = 2.01
+    text = "\n".join(report_lines(r))
+    assert "❌ 未通过" in text
+    assert "超出" in text
+
+
+def test到点模式ETA刚好在容差内算通过():
+    """容差是**严格小于** —— 2.00 s 不算过。边界要钉死。"""
+    r = _to_end()
+    r.eta_error_s = 1.999
+    assert "✅ 通过" in "\n".join(report_lines(r))
+    r.eta_error_s = 2.0
+    assert "❌ 未通过" in "\n".join(report_lines(r))
+
+
+def test到点模式不能拿跑满时长冒充跑到终点():
+    """定时模式的 reached_duration 在到点模式下**不参与判定**。
+
+    反过来也成立：只设 reached_duration 而 route_completed=False，仍要判红。
+    """
+    r = _to_end()
+    r.route_completed = False
+    r.reached_duration = True
+    assert "❌ 未通过" in "\n".join(report_lines(r))
+
+
+def test到点模式没跑到终点时不硬凑ETA():
+    """eta_error 为 None 时要说「无从对比」，不能显示一个假的 0.00 s。"""
+    r = _to_end()
+    r.route_completed = False
+    r.eta_error_s = None
+    text = "\n".join(report_lines(r))
+    assert "无从对比" in text
+    assert "❌ 未通过" in text
+
+
+def test到点模式也会显示注入延迟与清理状态():
+    """延迟分布与清理是**两种模式共用**的底线，不能因为换了模式就消失。"""
+    text = "\n".join(report_lines(_to_end()))
+    assert "注入延迟" in text
+    assert "清理        已确认" in text
+
+
+def test到点模式丢点一样算红():
+    r = _to_end()
+    r.dropped = 3
+    assert "❌ 未通过" in "\n".join(report_lines(r))
+
+
+def test到点模式清理未确认算红():
+    r = _to_end()
+    r.cleared = False
+    text = "\n".join(report_lines(r))
+    assert "❌ 未通过" in text
+    assert "panic-clear" in text
+
+
+# ── wait_until_finished ──
+
+
+def test没有引擎任务时wait_until_finished立刻返回真():
+    from vrun.session import RunSession
+    sess = RunSession(bridge=FakeBridge(), emit=None)
+    assert asyncio.run(sess.wait_until_finished(timeout=1.0)) is True
+
+
+def testwait_until_finished真能等到引擎跑完():
+    """★ 这条钉的是 F15 那个竞态的修复。
+
+    ``_wait_task`` 固定 5 秒就返回；``wait_until_finished`` 必须能等更久。
+    用一个跑 6 秒以上的引擎来区分两者 ——
+    5 秒的版本必然返回 False/提前返回，够长的版本必须等到。
+    """
+    from vrun.session import RunSession
+
+    route = make_long_route(4000.0, (30.5535, 103.9910))
+    sess = RunSession(bridge=FakeBridge(), emit=lambda *_: asyncio.sleep(0),
+                      settle_s=0.0, sample_rate=5.0,
+                      profile=SpeedProfile(v_bar=10.0))
+
+    async def run() -> bool:
+        sess.set_route([(p[0], p[1]) for p in route.points])
+        await sess.prepare()
+        await sess.start()
+        try:
+            # 引擎跑完 4000 m 要几十秒；这里只要求它**能等**而不是 5 秒就返回
+            got = await sess.wait_until_finished(timeout=8.0)
+            return got
+        finally:
+            await sess.stop()
+            await sess.cleanup()
+
+    # 8 秒不够跑完 4000 m ⇒ 返回 False，但这恰恰证明「它在等」而不是立刻返回
+    assert asyncio.run(run()) is False

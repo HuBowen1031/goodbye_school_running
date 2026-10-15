@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
 from .device import DeviceBridge
+from .estimate import closed_form_eta
 from .noise import GPSNoise
 from .profile import SpeedProfile
 from .route import Route
@@ -71,6 +72,24 @@ class SoakResult:
     #: ⚠️ **不是**「引擎是否跑到路线终点」—— 压测到点就主动停，
     #:    那是**预期**行为，拿它当判据会把每次都判成失败。
     #:    真正要问的是「计划的那 10 分钟有没有真的走完」。
+    #: ★ 「跑到终点」模式（``--to-end``）。
+    #:
+    #: M4 的验收要的是「跑完整条 3 km 路线」，不是「跑够 N 分钟」。
+    #: 两者不能互相代偿：定 18 分钟跑 3 km @ 10 km/h 会因为
+    #: 路线（18:01）先跑完而被判成「没跑满」—— **假阴性**；
+    #: 反过来定 20 分钟又会让引擎跑完还空转 2 分钟。
+    to_end: bool = False
+    #: 引擎是否**跑到了路线终点**（``RunStats.completed``）
+    route_completed: bool = False
+
+    #: 闭式解预览的 ETA（秒）。``--to-end`` 模式下与实际用时对比，
+    #: 判据是 works.md §6 M4 的「差 < 2 s」。
+    planned_eta_s: float = 0.0
+    #: 实际用时 − 预览 ETA（秒）。``None`` = 还没可比。
+    eta_error_s: Optional[float] = None
+    #: ETA 允许的误差上限（秒）
+    eta_tolerance_s: float = 2.0
+
     #: 最后一个采样点的时刻（秒）。判断「跑满时长」的依据。
     covered_s: float = 0.0
     reached_duration: bool = False
@@ -96,6 +115,11 @@ class SoakResult:
             "planned_distance_m": self.planned_s,
             "produced_distance_m": self.produced_s,
             "covered_s": self.covered_s,
+            "to_end": self.to_end,
+            "route_completed": self.route_completed,
+            "planned_eta_s": self.planned_eta_s,
+            "eta_error_s": self.eta_error_s,
+            "eta_tolerance_s": self.eta_tolerance_s,
             "reached_duration": self.reached_duration,
             "cleared": self.cleared,
             "cleanup_error": self.cleanup_error,
@@ -103,27 +127,57 @@ class SoakResult:
         }
 
 
+def _dur(seconds: float) -> str:
+    """秒 → ``m:ss`` / ``h:mm:ss``。与面板上的写法一致。"""
+    total = int(round(seconds))
+    h, m, s = total // 3600, (total % 3600) // 60, total % 60
+    return f"{h}:{m:02d}:{s:02d}" if h > 0 else f"{m}:{s:02d}"
+
+
 def report_lines(r: SoakResult) -> list[str]:
     """把报告渲染成人能扫的行。
 
-    ⚠️ **丢失点数非零时，最后一行必须是红的** ——
-       一份压测报告如果顶部不显眼地写着「掉了 N 个点」，
-       它就会被当成通过。而「有洞的轨迹」正是这个工具最不能出的错。
+    ⚠️ 两种模式的**判据不同**，绝不能混
+        · 定时模式：回答「这段时间稳不稳」⇒ 红线是丢失点数 + 覆盖时长
+        · 到点模式：回答「整条轨迹跑完对不对」⇒ 红线是**跑到了终点 + ETA 准**
+    一份把「路线只跑了一半」显示成通过的报告，比没有报告更坏。
     """
-    out = [
-        f"计划时长    {r.duration_s:.0f} s  @ {r.sample_rate_hz:g} Hz"
-        f"（{r.planned_samples} 个点）",
+    out: list[str] = []
+
+    if r.to_end:
+        out += [
+            f"运行方式    跑到路线终点（路线 {r.route_m:.1f} m，{r.speed_kmh:g} km/h）",
+            f"预览 ETA    {_dur(r.planned_eta_s)}（§3.6 闭式解，与面板同一个函数）",
+        ]
+    else:
+        out += [
+            f"计划时长    {r.duration_s:.0f} s  @ {r.sample_rate_hz:g} Hz"
+            f"（{r.planned_samples} 个点）",
+        ]
+    out += [
         f"实际墙钟    {r.wall_s:.1f} s",
-        f"产出采样    {r.produced_samples} 点"
-        + ("" if r.reached_duration else "  ⚠️ 未跑满计划时长"),
+        f"产出采样    {r.produced_samples} 点",
         f"注入成功    {r.injected} 点    丢失 {r.dropped} 点",
         f"轨迹长度    计划 {r.planned_s:.1f} m / 实际 {r.produced_s:.1f} m",
-        f"覆盖时长    {r.covered_s:.1f} s / 计划 {r.duration_s:.1f} s",
+        f"覆盖时长    {r.covered_s:.1f} s"
+        + ("" if r.to_end else f" / 计划 {r.duration_s:.1f} s"),
     ]
+
+    if r.to_end:
+        out.append(f"跑到终点    {'是' if r.route_completed else '**否**'}")
+        if r.eta_error_s is None:
+            out.append("ETA 对比    —— 引擎没跑完，无从对比")
+        else:
+            bad = abs(r.eta_error_s) >= r.eta_tolerance_s
+            out.append(
+                f"实际用时    {_dur(r.covered_s)}　与预览差 {r.eta_error_s:+.2f} s"
+                f"（要求 |差| < {r.eta_tolerance_s:g} s）"
+                + ("  ← **超差**" if bad else "  ✓")
+            )
 
     lat = r.latency or {}
     if lat.get("attempts"):
-        def fmt(k):
+        def fmt(k: str) -> str:
             v = lat.get(k)
             return "—" if v is None else f"{v:.0f}"
 
@@ -137,28 +191,47 @@ def report_lines(r: SoakResult) -> list[str]:
     else:
         out.append("注入延迟    无数据")
 
-    out.append(f"清理        {'已确认' if r.cleared else '**未确认 —— 请立刻跑 scripts/panic-clear.sh**'}")
+    out.append(f"清理        "
+               + ("已确认" if r.cleared
+                  else "**未确认 —— 请立刻跑 scripts/panic-clear.sh**"))
     if r.cleanup_error:
         out.append(f"清理错误    {r.cleanup_error}")
     if r.error:
         out.append(f"错误        {r.error}")
 
-    # 判定：三条红线，缺一不可
-    ok = (r.dropped == 0) and r.reached_duration and not r.error and r.cleared
-    reasons = []
+    # ── 判定 ──
+    # ⚠️ 两条规则都必须逐条落到 `reasons` 上。
+    #   写规则文案时漏了对应检查，报告就会「写着这条红线、实际不查」——
+    #   而 `test到点模式清理未确认算红` 就是为这个存在的
+    #   （第一版到点分支真的漏了 `cleared` 与 `error` 两条）。
+    reasons: list[str] = []
     if r.dropped:
         reasons.append(f"丢了 {r.dropped} 点")
-    if not r.reached_duration:
-        reasons.append("没跑满计划时长")
     if r.error:
         reasons.append("有报错")
     if not r.cleared:
         reasons.append("**清理未确认** —— 手机可能还卡在注入位置上")
+
+    if r.to_end:
+        if not r.route_completed:
+            reasons.append("没跑到路线终点")
+        if r.eta_error_s is None:
+            reasons.append("无从比对 ETA")
+        elif abs(r.eta_error_s) >= r.eta_tolerance_s:
+            reasons.append(f"ETA 差 {r.eta_error_s:+.2f} s 超出 {r.eta_tolerance_s:g} s")
+        ok = not reasons
+        rule = "跑到终点、ETA 误差在容差内、丢失点数 = 0、无报错、清理成功"
+    else:
+        if not r.reached_duration:
+            reasons.append("没跑满计划时长")
+        ok = not reasons
+        rule = "丢失点数 = 0、跑满计划时长、无报错、清理成功"
+
     out.append("")
-    out.append(("✅ 通过" if ok else "❌ 未通过")
-               + " —— 红线：丢失点数 = 0、跑满计划时长、无报错、清理成功"
+    out.append(("✅ 通过" if ok else "❌ 未通过") + f" —— 红线：{rule}"
                + ("" if ok else f"（踩中：{'、'.join(reasons)}）"))
     return out
+
 
 
 async def soak(
@@ -170,9 +243,18 @@ async def soak(
     speed_kmh: float = 10.0,
     noise_level: str = "realistic",
     seed: int = 0,
+    to_end: bool = False,
     on_progress: Optional[Callable[[int, int], None]] = None,
 ) -> SoakResult:
-    """连着设备跑 ``duration_s`` 秒，按 ``sample_rate_hz`` 注入。
+    """连着设备跑，按 ``sample_rate_hz`` 注入。
+
+    两种终止方式（``to_end`` 切换）：
+
+    ``False``（默认）
+        跑满 ``duration_s`` 秒就停。回答的是「这段时间里稳不稳」。
+    ``True``
+        **跑到路线终点**才停。回答的是「整条轨迹跑完对不对」——
+        M4 的 3 km 验收要的是这个，而且顺带比对预览 ETA 与实际用时。
 
     跑完**一定**走 :meth:`RunSession.cleanup` —— 幂等标记位在
     :class:`vrun.safety.SafetyGuard` 里，自己另起一套会让
@@ -183,6 +265,7 @@ async def soak(
         sample_rate_hz=sample_rate_hz,
         speed_kmh=speed_kmh,
         route_m=route.length(),
+        to_end=to_end,
     )
     rep.planned_samples = int(duration_s * sample_rate_hz) + 1
     rep.planned_s = speed_kmh / 3.6 * duration_s
@@ -212,6 +295,9 @@ async def soak(
     #   而「其实没清掉」恰恰是压测最不能瞒的事。
     profile = SpeedProfile(v_bar=speed_kmh)
     noise = GPSNoise(level=noise_level, seed=seed)
+    # 预览 ETA 用 §3.6 的闭式解 —— 与面板上显示的是**同一个函数**，
+    # 所以这里量到的差值就是「用户看到的预估准不准」。
+    rep.planned_eta_s = closed_form_eta(route.length(), speed_kmh, profile)
     sess = RunSession(bridge=bridge, emit=emit, settle_s=0.0,
                       profile=profile, noise=noise, sample_rate=sample_rate_hz)
 
@@ -238,12 +324,20 @@ async def soak(
         #
         #   `stop()` 内部已经等过一次引擎线程，所以以它为主、
         #   `_wait_task()` 只作兜底。
-        stopper = asyncio.create_task(_stop_after(sess, duration_s))
-        try:
-            await stopper          # 到点 → stop() → 内部已等过引擎线程
-            await sess._wait_task()  # 再兜一次，确认线程真的退了
-        finally:
-            stopper.cancel()
+        if to_end:
+            # 跑到终点。用 wait_until_finished 而不是 _wait_task ——
+            # 后者 5 秒就返回，而引擎还在正常注入（findings F15）。
+            finished = await sess.wait_until_finished(
+                timeout=duration_s * 3.0 + 120.0)
+            if not finished:
+                rep.error = rep.error or "引擎在超时前没跑到终点"
+        else:
+            stopper = asyncio.create_task(_stop_after(sess, duration_s))
+            try:
+                await stopper          # 到点 → stop() → 内部已等过引擎线程
+                await sess._wait_task()  # 再兜一次，确认线程真的退了
+            finally:
+                stopper.cancel()
 
 
     except Exception as exc:                      # noqa: BLE001 —— 报告要的是原文
@@ -254,6 +348,11 @@ async def soak(
         rep.injected, rep.dropped = st.injected, st.dropped
         rep.latency = bridge.injection_stats().summary()
         rep.produced_samples = ticks
+        stats = sess.stats
+        if stats is not None:
+            rep.route_completed = bool(stats.completed)
+            if to_end and stats.duration_s > 0:
+                rep.eta_error_s = stats.duration_s - rep.planned_eta_s
         samples = sess.samples
         if samples:
             rep.produced_s = samples[-1].s

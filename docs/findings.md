@@ -707,6 +707,12 @@ works.md §6 M2 那条「实测 1 Hz 连续注入 10 分钟，统计丢失点数
 ⇒ **清理必须在引擎线程真的退出之后做。**
 正确顺序是「先等到点触发 `stop()`（它内部会等线程）、再兜一次 `_wait_task()`」。
 
+⚠️ 顺带修掉这个 wart 本身：新增 :meth:`RunSession.wait_until_finished(timeout)`。
+原来的 ``_wait_task`` 是**会话内部的快路径** —— 调用它之前（``stop`` /
+``cleanup``）已经先置了停止标志，引擎一两个采样周期内就会退出，所以 5 秒足够、
+它**故意不等**。但外部要等「一次 18 分钟的运行自然跑完」时 5 秒显然不够。
+新方法只做这一件事，不改 ``_wait_task`` 的语义（改了会波及 stop / cleanup）。
+
 **其三：失败信号要从 ``error`` 事件接，不能靠 `try/except`，也不能事后查 `phase`。**
 
 - ``try/except`` 没用：`_run_engine_blocking` 把引擎异常**吞掉**并转成 ``error`` 事件
