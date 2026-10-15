@@ -8,12 +8,12 @@
 >
 > | 项 | 值 |
 > | --- | --- |
-> | 版本 | **v8（2026-10-15）** |
+> | 版本 | **v9（2026-10-15）** |
 > | 对应 `works.md` | v7 |
 > | 语言约定 | 代码注释、文档、GUI 文案**一律中文** |
-> | 测试规模 | Python **302 passed** / Swift **77 passed** |
+> | 测试规模 | Python **317 passed** / Swift **77 passed** |
 >
-> ⚠️ **重要前提（v8 更新）**：本文 v1 写作时仓库内**尚无任何代码文件**，
+> ⚠️ **重要前提（v9 更新）**：本文 v1 写作时仓库内**尚无任何代码文件**，
 > 全文描述的都是**待建文件的规格**。截至 v7，**M1 / M2 / M3 均已落地**，
 > `src/vrun/` 14 个文件与 `app/VRun/` 14 个源码文件全部有实现（`git ls-files` 逐个核对，v8 新增 `LiveMetrics.swift`）。
 >
@@ -815,6 +815,7 @@ vrun serve                                    # JSON Lines 走 stdin/stdout
 | `Sources/VRunApp/LogPanel.swift` + `LogStore` | 可滚动彩色日志、按天筛选、debug 开关、自动滚动 | M3 | ✅ |
 | `Sources/VRunApp/MainView.swift` | 窗口布局（依草图）：可拖宽左栏 + 右侧竖排钢笔工具栏 + 右下状态浮窗 + 四角 overlay | M3 | ✅ |
 | `Sources/VRunApp/Style.swift` | Liquid Glass 设计令牌、`GlassPanel` / `PanelHeader` / `Chip` / `KV` 组件 | M3 | ✅ |
+| `src/vrun/soak.py` ★★ | **M4 真机长跑压测**（`vrun soak`）：无头驱动 `prepare → start → 到点 stop → cleanup`，产出「丢失点数 + 延迟分位数 + 覆盖时长 + 清理确认」四件套。判定四红线；**不走 GUI**，压测不依赖人工点击。见 findings F15 |
 | `Sources/VRunApp/LiveMetrics.swift` ★★ | 会话实时读数的**纯模型**：`tick`/`progress` 的摄入、派生量（剩余/完成度/配速）与显示文案。不 import SwiftUI 视图，可被单测直接驱动（F14） | M3 | ✅ |
 | `Sources/VRunApp/DeviceStatusCard.swift` ★ | 侧栏顶部的设备状态卡：红/黄/绿三态圆点 + 强调色「刷新」按钮 + 失败原因详情（`user_found_problem.md` 第 2 条） | M3 | ✅ |
 | `Tests/VRunAppTests/PreviewMathTests.swift` | **跨语言契约测试**：与 `tests/golden/estimate.json` 同源的 §5.4 基准表断言（18 条） | M3 | ✅ |
@@ -1129,6 +1130,7 @@ environment.yml            ← conda 层：python 版本、conda 包
 | 2026-10-14 | **v6** | **修 F12「测试偷连真机」+ 计数纠偏**：① 新增 §6.2「测试绝不碰真机」纪律，护栏做在 fixture 层；② §7 脚本 5 → **3 个**（删除从未实现的 `bootstrap_env.sh` / `preflight.sh`）；③ `src/vrun` 计数 13 → **14**、§4.3 小节顺序修正（4.3.4 原先物理位置排在 4.3.2 之前）；④ §4.3.3 的「占位 / 待建」描述改为实装态，补上漏记的 `gpx` 子命令；⑤ §3 `environment.yml` 「待建」→「已存在」；⑥ §6 补齐 M2 三条测试文件（原表 11 行 / 实际 14 个） |
 | 2026-10-14 | **v5** | **M2 完成 + 真机验证通过**：① 新增 §4.3.4 `session.py`（会话状态机 + 跨线程边界的三个解法），编排层 4 → 5 个文件；② §4.2 标注「真机 6 点移动测试通过，用户肉眼确认」；③ 新增 `tests/test_session.py`（23 条），测试 13 → 14 个文件、规模计数 53 → 54；④ 引入 findings **F11**（三个静默失效的会话 bug） |
 | 2026-10-14 | **v4** | **M2 设备层落地**（⚠️ 当时真机一行未验）：① §4.2.1 补「实测核对过的上游 API」表 —— `set()` 只收经纬度（由此解释 M0 的 altitude 恒为 0）、隧道是**进程级单例**、DDI 降级为尽力而为的探测；② §4.2.2 补 atexit/signal 的**同步 × async 技术难点**与两条解法，并说明 `panic-clear.sh` 是保险链的最后一环而非可选脚本；③ `device.status` / `device.cleanup` 在 ipc 与 CLI 中实装；④ 测试 11 → 13 个文件、规模计数 51 → 53 |
+| 2026-10-15 | **v9** | **M4 压测工具（+ F15）**：① `device.py` 新增 `InjectionStats` —— 记录**每一次尝试**的注入耗时（含超时），刻意不放进每秒推给 GUI 的 `DeviceStatus`；② 新增 `src/vrun/soak.py` 与 `vrun soak --minutes N`；③ `tests/test_soak.py` 15 条（判定分支 + 无头整链路）；④ 规模 302 → **317** Python；⑤ 引入 findings **F15**（压测工具本身会骗人：`_wait_task` 5 s 上限导致「引擎还在注入就清理」） |
 | 2026-10-15 | **v8** | **M3 收口（接通实时数据线 + F14）**：① 新增 `LiveMetrics.swift`（实时读数纯模型）；② `SidecarEvent` 补 7 个数值字段；③ `SessionController` 接上 `tick`/`progress`，`prepare` 清零 / `stop` 冻结；④ HUD 新增「运行中」区块（6 行），并修掉 236 pt 宽度下的折行；⑤ `RouteCanvas` 加当前位置 annotation（只改坐标不重建 view）；⑥ 新增**跨语言基准** `tests/golden/session_events.json` 与两侧测试；⑦ 规模 55 → **77** Swift、298 → **302** Python；⑧ 引入 findings **F14**（`Decodable` 成功 ≠ 字段对上了） |
 | 2026-10-15 | **v7** | **M3 收口（GUI 改造 + F13）**：① 新增 `DeviceStatusCard.swift`（刷新按钮 + 三态提示，`user_found_problem.md` 第 2 条）；② `RouteModel.startAnchor` 把绿圈语义改为「路线起点」（第 1 条）；③ `Models.swift` 的 `SidecarEvent` 补 9 个字段（含成对的 `lat`/`lon`）；④ `MainView` 提升为 `@StateObject` 持有 `RouteModel`；⑤ §5 补入 4 个新测试文件，其中 `GreenDotMapKitTests` 是**首个真喂 MapKit 的集成测试**；⑥ 规模 18 → **55** Swift、293 → **298** Python；⑦ 引入 findings **F13**（崩溃栈顶符号不是真凶 + 纯逻辑测试的盲区） |
 | 2026-10-13 | **v3** | **M3 GUI 落地**：① §5 改为 13 个文件并逐个标注 ✅/⬜，补入 `LogPanel.swift` / `MainView.swift` / `Style.swift` / `PreviewMathTests.swift`；② 新增 §5.0.1 登记草图带来的两处扩展（可调宽+可折叠左栏、独立日志面板）；③ §5.2 补三条实测约束：`VRUN_REPO_ROOT` 必填的理由、四角 overlay 不可同 `ZStack`、`.build/` 也要挪出 `~/Documents`；④ 引入 findings **F10**（闭式解 0.76 s 残差翻转显示秒数 → 对齐改用秒级容差）；⑤ 规模计数 49 → 51 |

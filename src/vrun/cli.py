@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from typing import Optional
 
 from .estimate import (
@@ -275,6 +276,63 @@ def _cmd_device_status(args: argparse.Namespace) -> int:  # noqa: ARG001
     return 0
 
 
+def _cmd_soak(args: argparse.Namespace) -> int:
+    """真机长跑压测（M4 / works.md §6 M2 那条「10 分钟统计丢失点与延迟分布」）。
+
+    ⚠️ 它**不走 GUI**，是有意的：压测要连续占着手机 10–20 分钟，
+       而 GUI 那套「预置 → 开始」要人点按钮。自动化压测不该依赖点击。
+
+    ⚠️ 跑完**一定**自己清理。若报告里「清理」那一行不是「已确认」，
+       立刻手动跑 ``scripts/panic-clear.sh``。
+    """
+    import asyncio
+
+    try:
+        from .device import DeviceBridge
+        from .soak import make_long_route, report_lines, soak, write_report
+    except ImportError as exc:
+        print(f"设备层不可用：{exc}", file=sys.stderr)
+        return 2
+
+    speed = args.speed if args.speed is not None else 10.0
+    # 路线给 2 倍余量，保证任何速度下都不会「先到终点」而提前结束压测
+    planned_m = speed / 3.6 * args.minutes * 60.0
+    route = make_long_route(planned_m * 2.0, DEFAULT_ORIGIN)
+
+    print("设备层就绪，连线中…")
+    bridge = DeviceBridge()
+    last = [0.0]
+
+    def progress(done: int, total: int) -> None:
+        now = time.monotonic()
+        if now - last[0] < 5.0 and done < total:
+            return
+        last[0] = now
+        pct = done / total * 100 if total else 0.0
+        print(f"  …{done}/{total} 点（{pct:.0f}%）", flush=True)
+
+    rep = asyncio.run(soak(
+        bridge, route,
+        duration_s=args.minutes * 60.0,
+        sample_rate_hz=args.rate,
+        speed_kmh=speed,
+        noise_level=args.noise,
+        seed=args.seed,
+        on_progress=progress,
+    ))
+
+    print()
+    for line in report_lines(rep):
+        print(line)
+
+    if args.json:
+        write_report(rep, args.json)
+        print(f"\n报告已写出 {args.json}")
+
+    return 0 if (rep.dropped == 0 and rep.reached_duration
+                 and not rep.error and rep.cleared) else 1
+
+
 def _cmd_panic_clear(args: argparse.Namespace) -> int:  # noqa: ARG001
     """紧急清除注入的位置（works.md §2.3）。
 
@@ -456,6 +514,21 @@ def build_parser() -> argparse.ArgumentParser:
     # ── 设备相关（M2）──
     p_dev = sub.add_parser("device-status", help="[M2] 查看设备与隧道状态")
     p_dev.set_defaults(func=_cmd_device_status)
+
+    p_soak = sub.add_parser(
+        "soak",
+        help="[M4] 真机长跑压测：统计丢失点数与注入延迟分布")
+    p_soak.add_argument("--minutes", type=float, default=5.0,
+                        help="压测时长（分钟）。默认 5；works.md 要求 10")
+    p_soak.add_argument("--rate", type=float, default=1.0, help="采样率 Hz")
+    p_soak.add_argument("--speed", type=float, default=None,
+                        help="速度 km/h（默认 10）")
+    p_soak.add_argument("--noise", default="realistic",
+                        choices=["off", "realistic", "strict"])
+    p_soak.add_argument("--seed", type=int, default=0)
+    p_soak.add_argument("--json", default=None,
+                        help="把报告写成 JSON 落盘（默认不写）")
+    p_soak.set_defaults(func=_cmd_soak)
 
     p_clear = sub.add_parser("panic-clear", help="[M2] 紧急清除注入的位置")
     p_clear.set_defaults(func=_cmd_panic_clear)

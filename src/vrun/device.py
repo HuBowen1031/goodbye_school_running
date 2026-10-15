@@ -49,8 +49,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import platform
+import time
 from dataclasses import dataclass, field, replace
-from typing import Optional
+from typing import List, Optional
 
 # ⚠️ 唯一允许的设备层 import。① 纯计算层绝不能有它。
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
@@ -154,6 +155,48 @@ class DeviceStatus:
         }
 
 
+@dataclass
+class InjectionStats:
+    """注入延迟分布。
+
+    ★ 为什么**不**放进 :class:`DeviceStatus`
+        ``DeviceStatus`` 是 1 Hz 推给 GUI 的状态快照，
+        把一个随时间增长的可变列表塞进去，等于每秒把整个历史再传一遍。
+        延迟分布只对 M4 的压测有意义，所以留在这儿，按需取。
+
+    ★ 记录的是**每一次尝试**，不是每一次成功
+        超时的那些也要留 —— 它们正是延迟分布的长尾。
+        只记成功的话，看到的分布会很漂亮，而真出问题的那次被抹掉了。
+    """
+
+    #: 每次 ``set`` 尝试的耗时（毫秒）。含失败与超时。
+    attempt_ms: List[float] = field(default_factory=list)
+    #: 因超时而失败的尝试次数
+    timeouts: int = 0
+
+    def summary(self) -> dict:
+        """分位数摘要。样本太少时如实说「样本不足」，不硬凑数字。"""
+        xs = sorted(self.attempt_ms)
+
+        def pct(p: float) -> Optional[float]:
+            if not xs:
+                return None
+            # 最近秩法：p=0.5 取第 ceil(0.5*n) 个
+            k = max(1, min(len(xs), int(-(-p * len(xs) // 1))))
+            return xs[k - 1]
+
+        return {
+            "attempts": len(xs),
+            "timeouts": self.timeouts,
+            "min_ms": xs[0] if xs else None,
+            "p50_ms": pct(0.50),
+            "p90_ms": pct(0.90),
+            "p99_ms": pct(0.99),
+            "max_ms": xs[-1] if xs else None,
+            "mean_ms": (sum(xs) / len(xs)) if xs else None,
+        }
+
+
 # ══════════════════════════════════════════════════════════════
 #  DeviceBridge
 # ══════════════════════════════════════════════════════════════
@@ -199,6 +242,11 @@ class DeviceBridge:
         self._status = DeviceStatus()
         self._lock = asyncio.Lock()
 
+        # ★ 注入延迟分布。刻意**不放进 DeviceStatus** ——
+        #   那是每秒推给 GUI 的状态快照，塞进一个随时间增长的可变列表，
+        #   等于每秒把整段历史再传一遍。
+        self._stats = InjectionStats()
+
         # 三层资源，从外到内：RSD 隧道 → DVT provider → LocationSimulation
         self._rsd: Optional[RemoteServiceDiscoveryService] = None
         self._dvt: Optional[DvtProvider] = None
@@ -208,6 +256,10 @@ class DeviceBridge:
         self._tunnel_attempted = False
 
     # ── 状态 ────────────────────────────────────────────────
+
+    def injection_stats(self) -> InjectionStats:
+        """注入延迟分布（M4 压测用）。"""
+        return self._stats
 
     def status(self) -> DeviceStatus:
         """当前状态快照。**只读，不触发连接** —— GUI 会高频调用它。
@@ -398,17 +450,25 @@ class DeviceBridge:
         last: Optional[BaseException] = None
         async with self._lock:
             for attempt in range(tries + 1):
+                # ★ 计时**只包住这一次尝试**，不是整个重试循环。
+                #   包住整个循环的话，重试过的那次会记成「一次很慢的注入」，
+                #   而真相是「两次正常的注入」—— 分布会被彻底带偏。
+                t0 = time.perf_counter()
                 try:
                     await asyncio.wait_for(self._loc.set(lat, lon), timeout=tmo)
                 except asyncio.TimeoutError as exc:
                     last = exc
+                    self._stats.attempt_ms.append((time.perf_counter() - t0) * 1000.0)
+                    self._stats.timeouts += 1
                     log.warning("注入超时 (%.1fs, 第 %d/%d 次)：%.5f,%.5f",
                                 tmo, attempt + 1, tries + 1, lat, lon)
                 except Exception as exc:
                     # 非超时类错误（隧道掉了 / 通道断了）重试没有意义
                     last = exc
+                    self._stats.attempt_ms.append((time.perf_counter() - t0) * 1000.0)
                     break
                 else:
+                    self._stats.attempt_ms.append((time.perf_counter() - t0) * 1000.0)
                     self._status.injected += 1
                     # ★ 记住最后成功注入的位置 —— GUI 的绿圈就靠它。
                     #   只在**成功**时更新：失败的那次坐标设备根本没收到，
