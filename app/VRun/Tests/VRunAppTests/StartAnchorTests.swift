@@ -112,6 +112,38 @@ final class StartAnchorTests: XCTestCase {
         XCTAssertNotNil(a, "缩放后锚点仍应是路线的第一个点")
         XCTAssertEqual(a?.lat, m.points.first?.lat)
     }
+
+    // MARK: - 缩放必须**固定起点** ★ 跨语言契约
+
+    /// ★ 回归：``scaled(to:)`` 必须把**起点钉在原地**。
+    ///
+    /// 原因是一条链：
+    ///   绿圈 = 路线起点（``startAnchor``）→ 侧车注入 ``route.point_at(0)``。
+    ///   若缩放绕**质心**进行，起点会被推走 ——
+    ///   画一个 30 m 直径的圈再缩放到 3000 m，起点漂 **451 m**（实测），
+    ///   而界面**不报任何错**。
+    ///
+    /// Python 侧 ``Route.scaled_to`` 同样改了，两边必须一致。
+    func testScalingKeepsStartPointFixed() {
+        let second = GeoPoint(lat: 30.6005, lon: 104.1005)
+        let m = makeRoute(points: [firstClick, second])
+        let before = m.points[0]
+        XCTAssertTrue(m.scaled(to: 3000))
+        XCTAssertEqual(m.points[0].lat, before.lat, accuracy: 1e-12,
+                       "缩放后起点漂了 —— 注入的将是另一个地方")
+        XCTAssertEqual(m.points[0].lon, before.lon, accuracy: 1e-12)
+    }
+
+    /// 反复缩放也不该让起点漂 —— 迭代修正里最容易丢的就是锚点。
+    func testRepeatedScalingKeepsStartPointFixed() {
+        let second = GeoPoint(lat: 30.6005, lon: 104.1005)
+        let m = makeRoute(points: [firstClick, second])
+        let before = m.points[0]
+        for target in [1000.0, 5000.0, 300.0, 12000.0] {
+            XCTAssertTrue(m.scaled(to: target))
+            XCTAssertEqual(m.points[0].lat, before.lat, accuracy: 1e-9)
+        }
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════

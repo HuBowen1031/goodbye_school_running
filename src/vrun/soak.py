@@ -419,20 +419,40 @@ def make_long_route(distance_m: float, origin: tuple[float, float]) -> Route:
     ⚠️ 压测不该被「路线走完」打断。
        引擎跑到终点就停了，于是「10 分钟」会变成「路线时长」，
        而报告里 planned_samples 与 produced_samples 的差异会被误读成丢点。
+
+    ⚠️ 直接按目标周长**构造**，而不是「先画大方块再缩放」
+       缩放的锚点已改成「起点」（见 :meth:`vrun.route.Route.scaled_to`），
+       先画后缩会让整条路线从 ``origin`` 向东偏出几百米 ——
+       而 ``origin`` 是「江安校区附近的合成起点」，
+       偏出去就不在江安校区附近了。
+       这里改成直接构造边长 = 周长/4 的方块，再用一次**绕质心**的
+       微小修正把周长压到目标值（经纬度线性偏移与大圆距离不是严格线性）。
     """
-    # 周长取 2 倍余量，保证任何速度下都够跑
-    side = (distance_m * 2.0) ** 0.5
+    side = distance_m / 4.0
     dlat = side / 111_320.0
     dlon = side / (111_320.0 * 0.87)      # 成都一带 cos(30.55°) ≈ 0.861
     lat0, lon0 = origin
+    h_lat, h_lon = dlat / 2.0, dlon / 2.0
     pts = [
-        (lat0, lon0),
-        (lat0 + dlat, lon0),
-        (lat0 + dlat, lon0 + dlon),
-        (lat0, lon0 + dlon),
-        (lat0, lon0),
+        (lat0 - h_lat, lon0 - h_lon),
+        (lat0 + h_lat, lon0 - h_lon),
+        (lat0 + h_lat, lon0 + h_lon),
+        (lat0 - h_lat, lon0 + h_lon),
+        (lat0 - h_lat, lon0 - h_lon),
     ]
-    return Route(pts).scaled_to(distance_m)
+    route = Route(pts)
+    for _ in range(4):
+        ratio = distance_m / route.length()
+        if abs(ratio - 1.0) < 1e-12:
+            break
+        n = len(route.points)
+        clat = sum(p[0] for p in route.points) / n
+        clon = sum(p[1] for p in route.points) / n
+        route = Route([
+            (clat + (la - clat) * ratio, clon + (lo - clon) * ratio)
+            for la, lo in route.points
+        ])
+    return route
 
 
 def write_report(rep: SoakResult, path: str) -> None:

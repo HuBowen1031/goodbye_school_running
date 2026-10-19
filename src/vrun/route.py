@@ -93,9 +93,21 @@ class Route:
     # ── 缩放 ──────────────────────────────────────────────────
 
     def scaled_to(self, target_m: float) -> "Route":
-        """绕质心**等比**缩放，使总长等于 ``target_m``。
+        """等比缩放，使总长等于 ``target_m``，**起点固定不动**。
 
         用途：地图上随手画的路线只提供「赛道形状」，长度由面板的目标距离决定。
+
+        ★ 为什么锚在**起点**而不是质心
+            绿圈的语义是「路线起点」（``RouteModel.startAnchor``），
+            而 ``session.prepare()`` 注入的也是 ``route.point_at(0)``。
+            若绕质心缩放，起点会被推走：
+            画一个 30 m 直径的圈再缩放到 3000 m，起点会**漂 451 m**（实测）。
+
+            而这不报任何错 —— 界面照常显示路线、照常注入，
+            只是「用户点的那一下」和「实际注入的那一下」不在同一个地方。
+            对 30 m 的圈来说，451 m 是十几个圈半径。
+
+            锚在起点则完全符合直觉：起点是你选的，形状从起点长出去。
 
         注意：缩放会同时改变路线的形状尺度，这是可接受的 —— 不要求与真实
         道路严格对齐。另外，经纬度→米→经纬度不是严格线性（大圆 vs 平面），
@@ -104,15 +116,16 @@ class Route:
         if target_m <= 0.0:
             raise ValueError(f"目标长度必须为正，收到 {target_m}")
 
-        n = len(self.points)
-        clat = sum(p[0] for p in self.points) / n
-        clon = sum(p[1] for p in self.points) / n
+        # ★ 锚点 = 第一个点（起点），不是质心。
+        #   `alat + (lat - alat) * factor` 在 lat == alat 时**精确**等于 alat
+        #   （0.0 * factor == 0.0），所以锚点在迭代中一动不动。
+        alat, alon = self.points[0]
 
         factor = 1.0
         route: Route = self
         for _ in range(8):
             pts = [
-                (clat + (lat - clat) * factor, clon + (lon - clon) * factor)
+                (alat + (lat - alat) * factor, alon + (lon - alon) * factor)
                 for lat, lon in self.points
             ]
             route = Route(pts)

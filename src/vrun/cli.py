@@ -30,6 +30,7 @@ from .estimate import (
     estimate,
     golden_rows,
 )
+from .geo import to_wgs84
 from .noise import GPSNoise
 from .profile import PRESETS, SpeedProfile
 from .route import Route, circle_route
@@ -322,7 +323,15 @@ def _build_soak_route(args, speed: float) -> tuple[Route, object]:
 
     # ★ argparse 的 ``type=`` 已经在解析期校验过，这里拿到的必是合法二元组。
     #   刻意不在这里重跑一遍校验 —— 两处校验意味着两处会漂。
-    center = args.center
+    #
+    # ★ 坐标系换算在**这里**做，且只做一次：
+    #   往下传的（预览、路线、注入）全部是 WGS-84，
+    #   免得「一半换了一半没换」——那种错最难查。
+    center = to_wgs84(args.center[0], args.center[1], args.coord_system)
+    if args.coord_system != "wgs84":
+        print(f"★ 坐标已从 {args.coord_system} 换算到 WGS-84："
+              f"({args.center[0]:.6f}, {args.center[1]:.6f}) → "
+              f"({center[0]:.6f}, {center[1]:.6f})\n")
     diameter = args.diameter
     fence = args.fence_radius
 
@@ -389,7 +398,7 @@ def _cmd_soak(args: argparse.Namespace) -> int:
     if pv is not None:
         from .preview import preview_lines, rule_table_lines
 
-        print(f"★ 离线预览（未连接设备）—— 圆心 {args.center[0]:.6f}, {args.center[1]:.6f}，"
+        print(f"★ 离线预览（未连接设备）—— 圆心 {pv.center_lat:.6f}, {pv.center_lon:.6f}，"
               f"直径 {args.diameter:g} m，以 {args.smooth:g} s 平滑口径为准\n")
         for line in preview_lines(pv):
             print(line)
@@ -451,6 +460,43 @@ def _cmd_soak(args: argparse.Namespace) -> int:
         ok = (rep.dropped == 0 and rep.reached_duration
               and not rep.error and rep.cleared)
     return 0 if ok else 1
+
+
+def _cmd_geo_check(args: argparse.Namespace) -> int:
+    """坐标体检：告诉我这个坐标**在哪个坐标系**、换算到 WGS-84 是多少、偏了多少米。
+
+    ★ 为什么需要这个
+        DVT 注入只吃 **WGS-84**。而国内地图 App 给的是 GCJ-02（高德/腾讯/微信）
+        或 BD-09（百度），成都一带分别偏 **366 m** 与 **2084 m**。
+        把抄来的坐标直接注入，**不报错、不崩溃，只是落点不对**。
+        这个命令把「偏了多少」变成一个可以对着看的数。
+    """
+    from .geo import COORD_SYSTEMS, from_wgs84, haversine, to_wgs84
+
+    lat, lon = args.lat, args.lon
+    w_lat, w_lon = to_wgs84(lat, lon, args.system)
+
+    print(f"输入      ({lat:.6f}, {lon:.6f})  坐标系 {args.system}")
+    print(f"WGS-84    ({w_lat:.6f}, {w_lon:.6f})  ← DVT 注入要用这个")
+    print()
+
+    for system in COORD_SYSTEMS:
+        s_lat, s_lon = from_wgs84(w_lat, w_lon, system)
+        d = haversine(w_lat, w_lon, s_lat, s_lon)
+        mark = " ← 你给的就是这个" if system == args.system else ""
+        print(f"  {system:<7} ({s_lat:.6f}, {s_lon:.6f})   与 WGS-84 相差 {d:7.0f} m{mark}")
+
+    if args.system == "wgs84":
+        gcj_lat, gcj_lon = from_wgs84(w_lat, w_lon, "gcj02")
+        d = haversine(w_lat, w_lon, gcj_lat, gcj_lon)
+        print()
+        print(f"⚠️ 如果这个坐标其实是从**高德/腾讯/微信**上抄的，它就不是 WGS-84。")
+        print(f"   成都一带两者相差约 **{d:.0f} m** —— 重新按 --system gcj02 读一次。")
+        print(f"   同理，百度（BD-09）要按 --system bd09。")
+    print()
+    print("★ 要一个**绝对可靠**的 WGS-84 坐标：在 VRun 自己的地图上选点，")
+    print("  再从日志面板读「加点 (lat, lon)」—— MapKit 返回的就是 WGS-84。")
+    return 0
 
 
 def _cmd_panic_clear(args: argparse.Namespace) -> int:  # noqa: ARG001
@@ -659,6 +705,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_soak.add_argument("--center", type=_parse_center, default=None,
                         help="圆心，格式「纬度,经度」。给了就启用**圆模式**："
                              "以该点为圆心重复同一个圆，圈与圈几何完全重合")
+    p_soak.add_argument("--coord-system", default="wgs84",
+                        choices=["wgs84", "gcj02", "bd09"],
+                        help="--center 所属的坐标系。默认 wgs84。"
+                             "★ 从高德/腾讯/微信抄的坐标必须写 gcj02，"
+                             "百度写 bd09 —— 成都一带分别差 366 m / 2084 m")
     p_soak.add_argument("--diameter", type=float, default=30.0,
                         help="圆的直径（米），仅圆模式有效。默认 30")
     p_soak.add_argument("--laps", type=int, default=0,
@@ -677,6 +728,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_clear = sub.add_parser("panic-clear", help="[M2] 紧急清除注入的位置")
     p_clear.set_defaults(func=_cmd_panic_clear)
+
+    p_geo = sub.add_parser(
+        "geo-check",
+        help="[M4] 坐标体检：这个坐标是哪个坐标系？换算到 WGS-84 偏多少米？")
+    p_geo.add_argument("--lat", type=float, required=True, help="纬度")
+    p_geo.add_argument("--lon", type=float, required=True, help="经度")
+    p_geo.add_argument("--system", default="wgs84",
+                       choices=["wgs84", "gcj02", "bd09"],
+                       help="输入坐标所属的坐标系。默认 wgs84；"
+                            "高德/腾讯/微信抄的用 gcj02，百度用 bd09")
+    p_geo.set_defaults(func=_cmd_geo_check)
 
     return parser
 

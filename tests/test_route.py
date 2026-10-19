@@ -136,6 +136,55 @@ class TestScaling:
         with pytest.raises(ValueError):
             square.scaled_to(-100.0)
 
+    def test_keeps_start_point_fixed(self, square: Route) -> None:
+        """★ 回归：缩放必须**固定起点**（第一个点）。
+
+        为什么这是硬要求：
+          · 绿圈的语义是「路线起点」（``RouteModel.startAnchor``）；
+          · 侧车注入的也是 ``route.point_at(0)``（``session.prepare``）。
+
+        若绕**质心**缩放，起点会被推走 ——
+        画一个 30 m 直径的圈再缩放到 3000 m，起点漂 **451 m**（实测），
+        而界面**不报任何错**：路线照常显示、照常注入，
+        只是「用户点的那一下」和「实际注入的那一下」不在同一个地方。
+        """
+        scaled = square.scaled_to(3000.0)
+        assert scaled.points[0] == pytest.approx(square.points[0], abs=1e-12)
+
+    def test_start_point_survives_many_scalings(self, square: Route) -> None:
+        """反复缩放也不该让起点漂 —— 迭代修正里最容易丢的就是锚点。"""
+        r = square
+        for target in (1000.0, 5000.0, 300.0, 12000.0):
+            r = r.scaled_to(target)
+            assert r.points[0] == pytest.approx(square.points[0], abs=1e-9)
+
+    def test_scaled_shape_starts_at_the_anchor(self) -> None:
+        """一个具体场景：30 m 的圈缩放到 3000 m，起点必须原地不动。"""
+        import math
+
+        from vrun.geo import ENUProjector
+
+        center = (30.557533, 103.997792)
+        radius = 15.0
+        pts = []
+        for i in range(36):
+            th = 2 * math.pi * i / 36
+            pts.append((
+                center[0] + radius * math.cos(th) / 111_320.0,
+                center[1] + radius * math.sin(th) / (111_320.0 * math.cos(math.radians(center[0]))),
+            ))
+        pts.append(pts[0])
+        circle = Route(pts)
+
+        scaled = circle.scaled_to(3000.0)
+        assert scaled.length() == pytest.approx(3000.0, rel=1e-9)
+
+        proj = ENUProjector(*center)
+        e0, n0 = proj.to_enu(*circle.points[0])
+        e1, n1 = proj.to_enu(*scaled.points[0])
+        drift = math.hypot(e1 - e0, n1 - n0)
+        assert drift < 0.01, f"起点漂了 {drift:.3f} m"
+
 
 # ══════════════════════════════════════════════════════════════
 #  JSON 往返

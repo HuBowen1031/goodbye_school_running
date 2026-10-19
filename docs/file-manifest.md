@@ -8,12 +8,12 @@
 >
 > | 项 | 值 |
 > | --- | --- |
-> | 版本 | **v11（2026-10-15）** |
-> | 对应 `works.md` | v9 |
+> | 版本 | **v13（2026-10-19）** |
+> | 对应 `works.md` | v10 |
 > | 语言约定 | 代码注释、文档、GUI 文案**一律中文** |
-> | 测试规模 | Python **397 passed** / Swift **77 passed** |
+> | 测试规模 | Python **448 passed** / Swift **79 passed** |
 >
-> ⚠️ **重要前提（v11 更新）**：本文 v1 写作时仓库内**尚无任何代码文件**，
+> ⚠️ **重要前提（v13 更新）**：本文 v1 写作时仓库内**尚无任何代码文件**，
 > 全文描述的都是**待建文件的规格**。截至 v7，**M1 / M2 / M3 均已落地**，
 > `src/vrun/` **16** 个文件与 `app/VRun/` **14** 个源码文件全部有实现（`git ls-files` 逐个核对，v8 新增 `LiveMetrics.swift`，v11 新增 `preview.py`）。
 >
@@ -52,7 +52,7 @@
 - 想要「**滑块面板**」→ `app/VRun/Sources/VRunApp/` 里带 ★ 的 4 个文件
 - 想要「**证明它是对的**」→ `tests/` + `tests/golden/estimate.json`
 
-**规模概览**：全项目共 **55 项 = 54 个文件 + 1 个运行时目录**（详见 §10 交叉表）。
+**规模概览**：全项目共 **75 项 = 74 个文件 + 1 个运行时目录**（详见 §10 交叉表）。
 
 ---
 
@@ -860,6 +860,8 @@ vrun serve                                    # JSON Lines 走 stdin/stdout
 | `src/vrun/soak.py` ★★ | **M4 真机长跑压测**（`vrun soak`）：无头驱动 `prepare → start → 到点 stop → cleanup`，产出「丢失点数 + 延迟分位数 + 覆盖时长 + 清理确认」四件套。判定四红线；**不走 GUI**，压测不依赖人工点击。见 findings F15 |
 | `src/vrun/preview.py` ★★ | **M4 离线预览**（`vrun soak --dry-run`）：不连手机跑完整轨迹，算出校园 App 在 R1–R5 下的判定（逐点 / 平滑**两种口径**）+ 电子围栏最远距离 + 平滑窗口敏感性。0.2 秒出 19 分钟的结论。见 F16 / F17 |
 | `src/vrun/route.py` 的 `circle_points` / `circle_route` / `circle_route_to` ★★ | **同一个圆重复 N 圈，几何完全重合** ⇒ 围栏半径（15 m）与总里程（3.2 km）解耦。顶点严格在圆上、弦恒在圆内 ⇒ 无噪声时离圆心 ≤ 半径。见 F16 |
+| `src/vrun/geo.py` 的坐标系换算 ★★★ | WGS-84 ↔ GCJ-02（高德/腾讯/微信，偏 366 m）↔ BD-09（百度，偏 1914 m）。反算用不动点迭代（往返误差 0.0000 m，标准的一次抵消是 0.08–2.07 m）。**DVT 注入只认 WGS-84** —— 见 F19 / F21 |
+| `vrun geo-check` 子命令 ★★ | 坐标体检：输入坐标 + 所属坐标系 ⇒ 打印 WGS-84 位置、各坐标系差异（米）、以及「你是不是从高德抄的」提醒。见 F19 |
 | `Sources/VRunApp/LiveMetrics.swift` ★★ | 会话实时读数的**纯模型**：`tick`/`progress` 的摄入、派生量（剩余/完成度/配速）与显示文案。不 import SwiftUI 视图，可被单测直接驱动（F14） | M3 | ✅ |
 | `Sources/VRunApp/DeviceStatusCard.swift` ★ | 侧栏顶部的设备状态卡：红/黄/绿三态圆点 + 强调色「刷新」按钮 + 失败原因详情（`user_found_problem.md` 第 2 条） | M3 | ✅ |
 | `Tests/VRunAppTests/PreviewMathTests.swift` | **跨语言契约测试**：与 `tests/golden/estimate.json` 同源的 §5.4 基准表断言（18 条） | M3 | ✅ |
@@ -961,7 +963,7 @@ vrun serve                                    # JSON Lines 走 stdin/stdout
 
 ---
 
-## 6. 测试 · `tests/`（**16** 个文件）
+## 6. 测试 · `tests/`（**22** 个文件）
 
 | 文件 | 覆盖内容 | 里程碑 |
 | --- | --- | --- |
@@ -981,7 +983,13 @@ vrun serve                                    # JSON Lines 走 stdin/stdout
 | `tests/test_session.py` ★ | 状态迁移顺序；**背压**（注入慢则引擎慢）；`stop` 迟 1 s = 多注入一个点；暂停时位置不动；`stop` ≠ `cleanup` | M2 |
 | `tests/test_circle.py` ★★ | **几何保证**：折线上任何一点离圆心 ≤ 半径（20 万点采样）；顶点确实在半径上（防「保守地画小」）；**圈与圈几何完全重合**（防退化成螺旋）；圈数向上取整。22 条 | M4 |
 | `tests/test_preview.py` ★★ | 余量分母（F17 回归）；围栏参考系用真圆心；窗口越长衰减越狠；**关噪声时弦仍比弧短 0.14%**；种子可复现与稳健性；圈数搜索不纳入 R3。32 条 | M4 |
+| `tests/test_coord_system.py` ★★★ | 坐标系换算：往返闭合、偏移量级与**方向**、**黄金值**（钉位置而非量级 —— BD-09 漏一步后偏移量仍在旧区间内）、`out_of_china` 判据。28 条 | M4 |
 | `tests/test_cli.py` 的 `--noise` 同步组与 `--center` 解析组 ★ | 档位**逐一**与 `GPSNoise.LEVELS` 比对并**逐个喂给引擎**（F18 回归）；`--center` 走 argparse `type=`，非法坐标在**解析期**就被拒（不甩 traceback）；`--dry-run` 一行设备代码都跑不到 | M4 |
+| `tests/test_soak.py` | 判定分支 + **无头整链路**（压测工具自身的正确性 —— F15 的教训：工具会骗人） | M4 |
+| `tests/test_session_golden.py` | 跨语言基准 `tests/golden/session_events.json` 的 Python 侧断言 | M3 |
+| `tests/golden/session_events.json` ★ | 侧车事件流的**跨语言契约**（Python 与 Swift 两侧共用） | M3 |
+| `tests/test_coord_system.py` | WGS-84 / GCJ-02 / BD-09 换算与 `--coord-system` 透传 | M4 |
+| `tests/test_offset_editor.py` ★ | 参考路径拟合的三条命门：缩放**必须**作用于几何（漏了残差 2.2 m → 30+ m）；平移**必须**由最小二乘吃掉（锚点差异 31 m）；同形状路线**按长度择优**（`near_me.json` 与 `s2_3k2.json` 是同一个矩形）。另含「未改动时逐字节还原原 CSV」与模板 JS 语法检查 | 工具 |
 
 ### 6.1 关于 `golden/estimate.json`
 
@@ -1017,13 +1025,15 @@ vrun serve                                    # JSON Lines 走 stdin/stdout
 
 ---
 
-## 7. 脚本 · `scripts/`（3 个）
+## 7. 脚本 · `scripts/`（5 个）
 
 | 文件 | 职责 | 状态 |
 | --- | --- | --- |
 | `scripts/resolve_python.sh` ★ | **解释器路径的唯一入口**（F7）：`$VRUN_PYTHON` → `envs_dirs` 探测 → `conda env list --json` → 约定位置兜底 | ✅ M0 |
 | `scripts/panic-clear.sh` ★ | **保险链的最后一环**：GUI 崩溃或进程被杀后，一条命令恢复定位。`SafetyGuard` 在主事件循环已死时**自动**起它（`python -m vrun panic-clear`），不是可选脚本 | ✅ M2 |
 | `scripts/build_app.sh` | `swift build -c release` → 组装 `VRun.app`（Info.plist + 可执行文件 + `Resources/repo` 符号链接 + ad-hoc 签名） | ✅ M5 |
+| `scripts/offset_editor.py` | 读一份轨迹日志 CSV + 匹配路线 JSON → 生成**自包含**的拖拽编辑器 HTML（`logs/<name>_editor.html`）。核心是**参考路径拟合**：缩放系数搜索 + 最小二乘平移，残差 RMS 太大就**不挂参考路径** | ✅ 工具 |
+| `scripts/offset_editor_template.html` | 上述页面的模板（内联 CSS/JS，`__PAYLOAD__` 是数据占位符）。改版式改这里，改完重跑生成器 | ✅ 工具 |
 
 > **v2 曾列的 `bootstrap_env.sh` 与 `preflight.sh` 未实现，v5 已删除**：
 > M0 的环境检查是**手动**做的（记录在 `docs/preflight.md`），
@@ -1131,23 +1141,28 @@ environment.yml            ← conda 层：python 版本、conda 包
 | 里程碑 | 文件 | 数量 | 需要 iPhone？ |
 | --- | --- | --- | --- |
 | **既有** | `works.md`、`LICENSE` | 2 | — |
-| **M0** 环境与生死验证 | `requirements.txt`、`environment.yml`、`.gitignore`、`scripts/resolve_python.sh`、`probe/ProbeApp/ProbeApp.swift`、`docs/preflight.md` | 6 | ✅ |
-| **M1** 轨迹内核与估算 | ① 纯计算层 6 + `ipc.py` + `recorder.py` + `cli.py` + `__init__.py` + `__main__.py`（11）+ `tests/` 11 | 22 | ❌ |
+| **根目录配置** | `.gitignore`、`environment.yml`、`requirements.txt`、`user_found_problem.md` | 4 | — |
+| **M0** 环境与生死验证 | `scripts/resolve_python.sh`、`probe/ProbeApp/ProbeApp.swift`、`probe/ProbeApp.xcodeproj/project.pbxproj`、`docs/preflight.md`（4）+ `tests/test_env_resolution.py`（1） | 5 | ✅ |
+| **M1** 轨迹内核与估算 | ① 纯计算层 7（`geo`/`route`/`profile`/`noise`/`engine`/`estimate`/`preview`）+ `ipc.py` + `recorder.py` + `cli.py` + `__init__.py` + `__main__.py`（12）+ `tests/` 10 | 22 | ❌ |
 | **M2** 设备桥与会话 | `device.py`、`safety.py`、`session.py`、`scripts/panic-clear.sh`（4）+ `tests/` 3 | 7 | ✅ **真机已验**（6 点移动测试） |
-| **M3** macOS GUI | `app/VRun/` 全部（`Package.swift` + 12 源 + 1 测试 = 14） | 14 | ❌（可对假数据离线调试） |
-| **M4** 冒烟验证 | `docs/findings.md` | 1 | ✅ |
+| **M3** macOS GUI | `app/VRun/` 全部（`Package.swift` + 14 源 + 6 测试 = 21）+ `tests/` 2 | 23 | ❌（可对假数据离线调试） |
+| **M4** 冒烟验证 | `src/vrun/soak.py`、`docs/findings.md`（2）+ `tests/` 4 | 6 | ✅ |
 | **M5** 打包与文档 | `scripts/build_app.sh`（`README.md` ⬜ 待建） | 1 | ❌ |
+| **工具（跨阶段）** | `scripts/offset_editor.py`、`scripts/offset_editor_template.html`、`tests/test_offset_editor.py`（3） | 3 | ❌ |
 | **文档（跨阶段）** | `docs/file-manifest.md`（本文） | 1 | — |
 | **运行时** | `logs/`（**不入库**） | 1 | — |
-| **合计** | | **55** | |
+| **合计** | | **75** | |
 
-> **55 项 = 54 个文件 + 1 个运行时目录。**
-> 其中 **M1 的 22 项完全不需要 iPhone**，是风险最低、价值最高的部分；
-> 加上 M3 的 14 项，**共 36 项（约 2/3）可以全离线开发与验证**。
+> **75 项 = 74 个文件 + 1 个运行时目录。**
+> 其中 **M1 的 22 项 + M3 的 23 项 + 工具的 3 项 = 48 项（约 64%）可以全离线开发与验证**。
 
 > ⚠️ 本表在 v6 之前长期与正文不一致：分项加总 53、合计却写 54、页首又写「48 个文件」，
 > 且还列着**从未实现**的 `bootstrap_env.sh` / `preflight.sh`。
 > 已按 `git ls-files` + 未跟踪新文件**逐个核对重建**，不再手写计数。
+>
+> ⚠️ **v12 重新核对**：v11 之后仓库又长了一批文件（Swift 侧 12 → 14 源 / 1 → 6 测试，
+> Python 侧新增 `soak.py` 与 4 个测试文件），本表与页首计数一并重建为
+> **74 个文件 + 1 个运行时目录**。另：`user_found_problem.md` 此前未登记，一并补入。
 
 ---
 
@@ -1174,9 +1189,11 @@ environment.yml            ← conda 层：python 版本、conda 包
 
 | 日期 | 版本 | 变更 |
 | --- | --- | --- |
+| 2026-10-19 | **v12** | **离线轨迹点拖拽编辑器（工具层）**：① 新增 `scripts/offset_editor.py` + `scripts/offset_editor_template.html` —— 读 `logs/*.csv` 生成**自包含** HTML，浏览器里用鼠标拖动采样点，实时看「相对原始位置」与「相对理想路径」两种偏移，导出为新 CSV（**原文件不动**）；② 新增 `tests/test_offset_editor.py`（13 条），锁住参考路径拟合的三条命门 —— 缩放必须**同时**作用于几何（漏了残差 2.2 m → 30+ m，且不报错）、平移必须由**最小二乘**吃掉（路线缩放锚点差异实测 31 m）、同形状路线按**长度**择优（`near_me.json` 与 `s2_3k2.json` 是同一个矩形，残差打平）；③ §6 测试 16 → **21** 个文件、§7 脚本 3 → **5** 个；④ 计数全面重核：v11 之后仓库又长了一批文件，§10 交叉表与页首计数由 **55 项重建为 75 项**（74 个文件 + 1 个运行时目录），`user_found_problem.md` 此前未登记，一并补入；⑤ 记录：**Python 446 passed**（共收集 448），另有 **2 条在建用例待修**（`test_cli.py` 的 GCJ-02 期望值 30.630629 vs 实得 30.630627，差 0.2 m —— 属坐标系功能在建，与本轮无关）—— **已在 v13 修好**（黄金值随 12 cm 偏差的修正而更新，现 448 passed 全绿） |
 | 2026-10-14 | **v6** | **修 F12「测试偷连真机」+ 计数纠偏**：① 新增 §6.2「测试绝不碰真机」纪律，护栏做在 fixture 层；② §7 脚本 5 → **3 个**（删除从未实现的 `bootstrap_env.sh` / `preflight.sh`）；③ `src/vrun` 计数 13 → **14**、§4.3 小节顺序修正（4.3.4 原先物理位置排在 4.3.2 之前）；④ §4.3.3 的「占位 / 待建」描述改为实装态，补上漏记的 `gpx` 子命令；⑤ §3 `environment.yml` 「待建」→「已存在」；⑥ §6 补齐 M2 三条测试文件（原表 11 行 / 实际 14 个） |
 | 2026-10-14 | **v5** | **M2 完成 + 真机验证通过**：① 新增 §4.3.4 `session.py`（会话状态机 + 跨线程边界的三个解法），编排层 4 → 5 个文件；② §4.2 标注「真机 6 点移动测试通过，用户肉眼确认」；③ 新增 `tests/test_session.py`（23 条），测试 13 → 14 个文件、规模计数 53 → 54；④ 引入 findings **F11**（三个静默失效的会话 bug） |
 | 2026-10-14 | **v4** | **M2 设备层落地**（⚠️ 当时真机一行未验）：① §4.2.1 补「实测核对过的上游 API」表 —— `set()` 只收经纬度（由此解释 M0 的 altitude 恒为 0）、隧道是**进程级单例**、DDI 降级为尽力而为的探测；② §4.2.2 补 atexit/signal 的**同步 × async 技术难点**与两条解法，并说明 `panic-clear.sh` 是保险链的最后一环而非可选脚本；③ `device.status` / `device.cleanup` 在 ipc 与 CLI 中实装；④ 测试 11 → 13 个文件、规模计数 51 → 53 |
+| 2026-10-19 | **v13** | **坐标「不报错，只是偏了」（+ F19/F20/F21/F22）**：① `geo.py` 新增 WGS-84 ↔ GCJ-02 ↔ BD-09 换算（反算用不动点迭代，往返误差 0.0000 m）；② 新增 `vrun geo-check` 子命令 + `soak --coord-system`；③ **`Route.scaled_to` 与 `RouteModel.scaled(to:)` 的锚点从质心改为第一个点** —— 原先画 30 m 的圈再缩放到 3000 m 会让**起点漂 451 m** 而界面零报错（F20）；④ `make_long_route` 改为直接按目标周长构造；⑤ 交叉验证抓出 GCJ-02 纬向分母写成 `sqrt_magic²`（差 12 cm）—— 往返闭合与量级断言**全都照样通过**（F21）；⑥ 新增 `tests/test_coord_system.py`（28 条）+ CLI 的 geo-check/coord-system 用例；⑦ **11 组变异全部命中**；⑧ 测试规模 397 → **448** Python / 77 → **79** Swift（448 = 397 + 我新增的 38 条 + 并行会话的 `test_offset_editor.py` 13 条）|
 | 2026-10-15 | **v11** | **M4 圈模式 + 离线预览（+ F16/F17/F18）**：① 新增 `src/vrun/preview.py`（§4.1.7）—— 不连手机算校园 App 在 R1–R5 下的判定（**逐点 / 平滑两种口径**）+ 围栏最远距离；② `route.py` 新增 `circle_points` / `circle_route` / `circle_route_to`：**同一个圆重复 N 圈，几何完全重合**，把围栏半径（15 m）与里程（3.2 km）解耦；③ `soak` 新增 `--center/--diameter/--laps/--fence-radius/--smooth/--dry-run`，`plan_laps` 自动搜出「两种口径都过 R1/R4 且余量 ≥ 2%」的最小圈数（= 34）；④ 新增 `tests/test_circle.py`（22 条）+ `tests/test_preview.py`（32 条）+ `test_cli.py` 的 `--noise` 同步组；⑤ **13 组变异全部命中**；⑥ `route.py` 职责与 §4.1 / §6 文件数同步；⑦ 测试规模 328 → **397** |
 | 2026-10-15 | **v10** | **M4 到点模式 + 强杀第一档**：① `RunSession` 新增 `wait_until_finished(timeout)` —— 原 `_wait_task` 是会话内部快路径、固定 5 s 就返回（F15 的竞态根源），新方法只服务「等一次长运行自然跑完」；② `vrun soak --to-end` 跑完整条路线才停，并比对预览 ETA 与实际用时（差 < 2 s = §6 M4 验收线）；③ 测试 317 → **328**；④ 真机验证 `kill -9` GUI 后侧车随管道断开自动退出、**零孤儿零残留**（强杀第一档，无会话态） |
 | 2026-10-15 | **v9** | **M4 压测工具（+ F15）**：① `device.py` 新增 `InjectionStats` —— 记录**每一次尝试**的注入耗时（含超时），刻意不放进每秒推给 GUI 的 `DeviceStatus`；② 新增 `src/vrun/soak.py` 与 `vrun soak --minutes N`；③ `tests/test_soak.py` 15 条（判定分支 + 无头整链路）；④ 规模 302 → **317** Python；⑤ 引入 findings **F15**（压测工具本身会骗人：`_wait_task` 5 s 上限导致「引擎还在注入就清理」） |

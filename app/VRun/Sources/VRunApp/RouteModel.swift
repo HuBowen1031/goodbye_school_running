@@ -90,17 +90,24 @@ final class RouteModel: ObservableObject {
 
     /// 按目标距离等比缩放（§5.5 的「目标距离」入口）。
     ///
-    /// 绕质心缩放，与 Python 侧 `Route.scaled_to` 同构 ——
+    /// **锚在起点（第一个点）**，与 Python 侧 `Route.scaled_to` 同构 ——
     /// 地图上随手画的路线只提供「赛道形状」，长度由面板决定。
+    ///
+    /// ★ 为什么锚在起点而不是质心
+    ///   绿圈的语义是「路线起点」（`startAnchor`），
+    ///   而侧车注入的也是 `route.point_at(0)`（`session.prepare`）。
+    ///   若绕质心缩放，起点会被推走：画一个 30 m 直径的圈再缩放到 3000 m，
+    ///   起点会**漂 451 m**（实测）——而界面**不报任何错**。
+    ///   锚在起点则符合直觉：起点是你选的，形状从起点长出去。
     @discardableResult
     func scaled(to targetM: Double) -> Bool {
         guard points.count >= 2, totalLengthM > 0, targetM > 0 else { return false }
-        let n = Double(points.count)
-        let cLat = points.reduce(0) { $0 + $1.lat } / n
-        let cLon = points.reduce(0) { $0 + $1.lon } / n
         let factor = targetM / totalLengthM
-        points = points.map { GeoPoint(lat: cLat + ($0.lat - cLat) * factor,
-                                       lon: cLon + ($0.lon - cLon) * factor) }
+        // ★ 锚点 = 第一个点（起点），不是质心。
+        let aLat = points[0].lat
+        let aLon = points[0].lon
+        points = points.map { GeoPoint(lat: aLat + ($0.lat - aLat) * factor,
+                                       lon: aLon + ($0.lon - aLon) * factor) }
         recompute()
         return true
     }

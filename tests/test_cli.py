@@ -224,3 +224,66 @@ class TestDryRunNeverTouchesDevice:
         out = capsys.readouterr().out
         assert "离线预览" in out
         assert "设备层就绪" not in out, "不该走到连设备那一步"
+
+
+# ══════════════════════════════════════════════════════════════
+#  geo-check：坐标体检
+# ══════════════════════════════════════════════════════════════
+
+
+class TestGeoCheck:
+    """坐标选错时**不报错、只是位置不对** —— 这个命令把「偏了多少」变成可见的数。"""
+
+    def test_wgs84输入原样输出(self, capsys) -> None:
+        assert main(["geo-check", "--lat", "30.557533", "--lon", "103.997792"]) == 0
+        out = capsys.readouterr().out
+        assert "30.557533" in out
+        assert "坐标系 wgs84" in out
+
+    def test_gcj02输入给出换算后的WGS84(self, capsys) -> None:
+        assert main(["geo-check", "--lat", "30.557533", "--lon", "103.997792",
+                     "--system", "gcj02"]) == 0
+        out = capsys.readouterr().out
+        # 「--system gcj02」= 这个坐标**本来就是** GCJ-02 ⇒ 要**反算**成 WGS-84。
+        # 换算后的值必须与输入不同 —— 否则等于没换。
+        assert "30.560169" in out, "GCJ-02 → WGS-84 的换算结果不对"
+        assert "103.995506" in out
+        assert "366 m" in out, "偏移量必须是几百米这个量级"
+
+    def test_bd09输入也被支持(self, capsys) -> None:
+        assert main(["geo-check", "--lat", "30.557533", "--lon", "103.997792",
+                     "--system", "bd09"]) == 0
+        out = capsys.readouterr().out
+        assert "bd09" in out
+
+    def test_wgs84输入会提示可能抄错了坐标系(self, capsys) -> None:
+        main(["geo-check", "--lat", "30.557533", "--lon", "103.997792"])
+        out = capsys.readouterr().out
+        assert "高德" in out, "必须提醒「你可能是从国内地图抄的」"
+        assert "MapKit" in out or "WGS-84" in out
+
+    def test_非法坐标系被argparse拒(self) -> None:
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(
+                ["geo-check", "--lat", "30", "--lon", "104", "--system", "mars84"])
+
+
+class TestSoakCoordSystem:
+    """``soak --coord-system`` 必须真的换算，而不是只接受参数。"""
+
+    def test_gcj02会被换算成WGS84(self, capsys) -> None:
+        assert main(["soak", "--dry-run", "--to-end",
+                     "--center", "30.628212,104.084842",
+                     "--coord-system", "gcj02",
+                     "--diameter", "30"]) == 0
+        out = capsys.readouterr().out
+        assert "坐标已从 gcj02 换算到 WGS-84" in out
+        assert "30.630627" in out, "换算后的圆心不对"
+
+    def test_wgs84不做换算(self, capsys) -> None:
+        assert main(["soak", "--dry-run", "--to-end",
+                     "--center", "30.628212,104.084842",
+                     "--diameter", "30"]) == 0
+        out = capsys.readouterr().out
+        assert "换算到 WGS-84" not in out
+        assert "30.628212" in out
