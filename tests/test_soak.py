@@ -492,3 +492,89 @@ def test静置时间确实被传给会话():
     asyncio.run(soak(bridge, route, duration_s=2.0, sample_rate_hz=5.0,
                      speed_kmh=10.0, settle_s=0.5))
     assert len(seen.get("calls", [])) >= 2, "预置 + 推进，至少两注"
+
+
+# ══════════════════════════════════════════════════════════════
+#  --preset-only：只预置位置，不跑轨迹
+# ══════════════════════════════════════════════════════════════
+
+
+class TestPresetOnly:
+    """★ 用途：占用手机 20 分钟**之前**先确认位置对不对。
+
+    坐标偏几百米这种事，只有让用户在地图上亲眼看一眼才能确认 ——
+    从报告里读数字是确认不了的。
+
+    ⚠️ 本项目**没有** pytest-asyncio（不引新依赖），
+       所以异步用例走 ``asyncio.run(...)``，与本文件其余用例同构。
+    """
+
+    def test只预置不注入轨迹(self):
+        bridge = FakeBridge()
+        route = make_long_route(400.0, (30.5535, 103.9910))
+        rep = asyncio.run(soak(bridge, route, duration_s=0.0,
+                               settle_s=1.0, preset_only=True))
+        assert rep.preset_only
+        assert rep.held_s == pytest.approx(1.0)
+        # ★ 预置那**一注**是有的（否则位置根本没设），但**没有轨迹**
+        assert rep.injected == 1
+        assert rep.produced_samples == 0
+        assert rep.route_completed is False
+        assert not rep.error
+        assert rep.cleared, "预置完必须清理干净"
+        assert bridge.clear_calls >= 1, "cleanup 没真的调 clear"
+
+    def test预置坐标被记下来(self):
+        """报告要能说清「到底预置到哪儿了」—— 这是用户判断对错的唯一依据。"""
+        bridge = FakeBridge()
+        route = make_long_route(400.0, (30.5535, 103.9910))
+        rep = asyncio.run(soak(bridge, route, duration_s=0.0,
+                               settle_s=1.0, preset_only=True))
+        assert rep.preset_lat != 0.0
+        assert rep.preset_lon != 0.0
+        text = "\n".join(report_lines(rep))
+        assert f"{rep.preset_lat:.6f}" in text
+        assert "只预置位置" in text
+
+    def test清理未确认算红(self):
+        """★ 预置完没清掉 ⇒ 手机可能还卡在那个位置上 ⇒ 必须判红。"""
+        bridge = FakeBridge()
+        rep = asyncio.run(soak(bridge, make_long_route(400.0, (30.5535, 103.9910)),
+                               duration_s=0.0, settle_s=1.0, preset_only=True))
+        rep.cleared = False
+        text = "\n".join(report_lines(rep))
+        assert "❌" in text
+        assert "清理未确认" in text
+
+    def test预置模式不显示轨迹行(self):
+        """预置模式没跑轨迹，显示「轨迹长度 0 m」只会让人困惑。"""
+        rep = SoakResult(preset_only=True, preset_lat=30.5575, preset_lon=103.9978,
+                         held_s=60.0, cleared=True)
+        text = "\n".join(report_lines(rep))
+        assert "轨迹长度" not in text
+        assert "跑到终点" not in text
+        assert "预置坐标" in text
+
+    def test预置模式的红线与到点模式不同(self):
+        """「跑到终点」对预置模式毫无意义 —— 判据必须跟着模式换。"""
+        rep = SoakResult(preset_only=True, preset_lat=30.5, preset_lon=103.9,
+                         held_s=60.0, cleared=True)
+        text = "\n".join(report_lines(rep))
+        assert "预置成功、无报错、清理成功" in text
+        assert "ETA" not in text
+
+    def test预置模式同时报出圆心与注入点(self):
+        """★ 注入点是**圆周上的顶点**，圆心是**用户指定的位置**。
+
+        两者差 R 米（30 m 圈 = 15 m），地图上看不出来，
+        但报告只写一个数就会让人把「注入点」当成「圆心」——
+        而用户要判断对错的恰恰是**圆心**。
+        """
+        rep = SoakResult(preset_only=True,
+                         preset_lat=30.560169, preset_lon=103.995663,
+                         center_lat=30.560169, center_lon=103.995506,
+                         held_s=60.0, cleared=True)
+        text = "\n".join(report_lines(rep))
+        assert "圆心" in text
+        assert "30.560169" in text and "103.995506" in text
+        assert "103.995663" in text

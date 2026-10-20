@@ -412,6 +412,14 @@ def _cmd_soak(args: argparse.Namespace) -> int:
         print("以上是**离线推算**，只说明「按这些参数注入会是什么样」，"
               "不代表真机注入成功。接下来才真的连手机跑。\n")
 
+    if args.preset_only and args.settle <= 0:
+        # ★ 必须在**连设备之前**拒。
+        #   settle_s 就是「保持」窗口；没有它，预置完立刻就清理了，
+        #   用户在地图上什么都看不到 —— 而那等于白连一次手机。
+        print("--preset-only 必须配合 --settle（正秒数）使用："
+              "预置完要保持一会儿，你才来得及在地图上看一眼。", file=sys.stderr)
+        return 2
+
     print("设备层就绪，连线中…")
     bridge = DeviceBridge()
     last = [0.0]
@@ -429,6 +437,28 @@ def _cmd_soak(args: argparse.Namespace) -> int:
     if args.to_end:
         budget = route.length() / (speed / 3.6) * 1.6 + 120.0
 
+    if args.preset_only:
+        # 只预置：duration_s 没有意义，「保持」窗口就是 settle_s。
+        budget = 0.0
+
+    def _on_prepared() -> None:
+        if args.preset_only:
+            # ★ 同时说清「圆心」与「实际注入点」——
+            #   注入的是**路线的第一个点**（圆上距圆心 15 m 的顶点），
+            #   不是圆心。差 15 m 地图上看不出来，但报告里必须写两个数，
+            #   否则「预置坐标」这一行会让人以为那就是圆心。
+            where = ""
+            if pv is not None:
+                where = (f"（圆心 {pv.center_lat:.6f}, {pv.center_lon:.6f}；"
+                         f"注入点是圆周上的起点，距圆心 {args.diameter / 2:.0f} m）\n  ")
+            print(f"\n✅ 位置已预置，保持 {args.settle:.0f} s —— "
+                  "**现在打开手机地图，确认蓝点落在跑道上**\n"
+                  f"  {where}"
+                  "（本轮不注入轨迹，保持结束会自动清除位置）\n", flush=True)
+        else:
+            print(f"\n✅ 已预置到起点并静置 {args.settle:.0f} s —— "
+                  "**现在可以在校园 App 里点开始跑步了**\n", flush=True)
+
     rep = asyncio.run(soak(
         bridge, route,
         duration_s=budget,
@@ -438,10 +468,10 @@ def _cmd_soak(args: argparse.Namespace) -> int:
         seed=args.seed,
         to_end=args.to_end,
         settle_s=args.settle,
+        preset_only=args.preset_only,
+        center=(pv.center_lat, pv.center_lon) if pv is not None else None,
         on_progress=progress,
-        on_prepared=lambda: print(
-            f"\n✅ 已预置到起点并静置 {args.settle:.0f} s —— "
-            "**现在可以在校园 App 里点开始跑步了**\n", flush=True),
+        on_prepared=_on_prepared,
     ))
 
     print()
@@ -452,7 +482,9 @@ def _cmd_soak(args: argparse.Namespace) -> int:
         write_report(rep, args.json)
         print(f"\n报告已写出 {args.json}")
 
-    if args.to_end:
+    if args.preset_only:
+        ok = (not rep.error and rep.cleared and rep.preset_lat != 0.0)
+    elif args.to_end:
         ok = (rep.dropped == 0 and rep.route_completed and rep.cleared
               and rep.eta_error_s is not None
               and abs(rep.eta_error_s) < rep.eta_tolerance_s)
@@ -722,6 +754,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="假定 App 的平滑窗口（秒），仅圆模式有效。默认 5")
     p_soak.add_argument("--dry-run", action="store_true",
                         help="只跑离线预览并打印 App 口径的判定，**完全不连手机**")
+    p_soak.add_argument("--preset-only", action="store_true",
+                        help="**只预置位置**并原地保持 --settle 秒，不注入轨迹。"
+                             "用途：占用手机 20 分钟之前先确认位置对不对 —— "
+                             "坐标偏几百米这种事，只有在地图上亲眼看一眼才能确认")
     p_soak.add_argument("--json", default=None,
                         help="把报告写成 JSON 落盘（默认不写）")
     p_soak.set_defaults(func=_cmd_soak)

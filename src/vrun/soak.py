@@ -101,6 +101,26 @@ class SoakResult:
     cleared: bool = False
     cleanup_error: Optional[str] = None
 
+    #: ★ 只预置、不跑轨迹（``--preset-only``）。
+    #:
+    #: 用途：在**占用手机 20 分钟之前**先确认「位置到底对不对」。
+    #: 坐标偏了几百米这种事，只有让用户亲眼在地图上看一眼才能确认 ——
+    #: 而从报告里读数字是确认不了的。
+    preset_only: bool = False
+    #: 预置到哪个坐标（WGS-84）。
+    preset_lat: float = 0.0
+    preset_lon: float = 0.0
+    #: 圆心的坐标（仅圆模式有）。
+    #:
+    #: ⚠️ 与 ``preset_lat/preset_lon`` **不是一回事**：
+    #:    注入的是**路线的第一个点**（圆周上距圆心 R 的顶点），
+    #:    而圆心是用户指定的「那个位置」。差 R 米（30 m 圈 = 15 m），
+    #:    地图上看不出来，但两者都得报 —— 少一个就会让人误判。
+    center_lat: float = 0.0
+    center_lon: float = 0.0
+    #: 保持了多少秒（= 静置时长）。
+    held_s: float = 0.0
+
     error: Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -126,6 +146,12 @@ class SoakResult:
             "reached_duration": self.reached_duration,
             "cleared": self.cleared,
             "cleanup_error": self.cleanup_error,
+            "preset_only": self.preset_only,
+            "preset_lat": self.preset_lat,
+            "preset_lon": self.preset_lon,
+            "center_lat": self.center_lat,
+            "center_lon": self.center_lon,
+            "held_s": self.held_s,
             "error": self.error,
         }
 
@@ -147,7 +173,15 @@ def report_lines(r: SoakResult) -> list[str]:
     """
     out: list[str] = []
 
-    if r.to_end:
+    if r.preset_only:
+        out += [
+            f"运行方式    只预置位置并保持 {r.held_s:.0f} s（**不注入轨迹**）",
+            f"预置坐标    {r.preset_lat:.6f}, {r.preset_lon:.6f}  （WGS-84，注入点）",
+        ]
+        if r.center_lat != 0.0 or r.center_lon != 0.0:
+            out.append(f"圆心        {r.center_lat:.6f}, {r.center_lon:.6f}"
+                       "  （你指定的那个位置；注入点在其圆周上）")
+    elif r.to_end:
         out += [
             f"运行方式    跑到路线终点（路线 {r.route_m:.1f} m，{r.speed_kmh:g} km/h）",
             f"预览 ETA    {_dur(r.planned_eta_s)}（§3.6 闭式解，与面板同一个函数）",
@@ -161,12 +195,17 @@ def report_lines(r: SoakResult) -> list[str]:
         f"实际墙钟    {r.wall_s:.1f} s",
         f"产出采样    {r.produced_samples} 点",
         f"注入成功    {r.injected} 点    丢失 {r.dropped} 点",
-        f"轨迹长度    计划 {r.planned_s:.1f} m / 实际 {r.produced_s:.1f} m",
-        f"覆盖时长    {r.covered_s:.1f} s"
-        + ("" if r.to_end else f" / 计划 {r.duration_s:.1f} s"),
     ]
+    if not r.preset_only:
+        out += [
+            f"轨迹长度    计划 {r.planned_s:.1f} m / 实际 {r.produced_s:.1f} m",
+            f"覆盖时长    {r.covered_s:.1f} s"
+            + ("" if r.to_end else f" / 计划 {r.duration_s:.1f} s"),
+        ]
 
-    if r.to_end:
+    if r.preset_only:
+        pass
+    elif r.to_end:
         out.append(f"跑到终点    {'是' if r.route_completed else '**否**'}")
         if r.eta_error_s is None:
             out.append("ETA 对比    —— 引擎没跑完，无从对比")
@@ -215,7 +254,10 @@ def report_lines(r: SoakResult) -> list[str]:
     if not r.cleared:
         reasons.append("**清理未确认** —— 手机可能还卡在注入位置上")
 
-    if r.to_end:
+    if r.preset_only:
+        ok = not reasons
+        rule = "预置成功、无报错、清理成功"
+    elif r.to_end:
         if not r.route_completed:
             reasons.append("没跑到路线终点")
         if r.eta_error_s is None:
@@ -248,6 +290,8 @@ async def soak(
     seed: int = 0,
     to_end: bool = False,
     settle_s: float = 0.0,
+    preset_only: bool = False,
+    center: Optional[tuple[float, float]] = None,
     on_progress: Optional[Callable[[int, int], None]] = None,
     on_prepared: Optional[Callable[[], None]] = None,
 ) -> SoakResult:
@@ -280,7 +324,10 @@ async def soak(
         speed_kmh=speed_kmh,
         route_m=route.length(),
         to_end=to_end,
+        preset_only=preset_only,
     )
+    if center is not None:
+        rep.center_lat, rep.center_lon = float(center[0]), float(center[1])
     rep.planned_samples = int(duration_s * sample_rate_hz) + 1
     rep.planned_s = speed_kmh / 3.6 * duration_s
 
@@ -328,38 +375,47 @@ async def soak(
         sess.set_route([(p[0], p[1]) for p in route.points])
         # 走官方路径：prepare 会把位置预置到起点并装上保险。
         # 压测要压的就是**这条真实链路**，不是我们自己拼的简化版。
-        await sess.prepare()
-        await sess.start()
-
-        # 到点就停。⚠️ 靠计时器停、而不是等引擎跑到路线终点 ——
-        #   否则「10 分钟」实际取决于路线长度，报告里的秒数就失去意义。
-        #
-        # ★ 顺序：**先等到点、再等引擎退出**，反过来会出事。
-        #
-        #   `RunSession._wait_task()` 内部是 `wait_for(..., timeout=5.0)`，
-        #   也就是**最多等 5 秒就返回**，哪怕引擎还在正常跑。
-        #   若先 `_wait_task()`，5 秒后它就返回；接着就去清理 ——
-        #   而引擎线程仍在后台注入，于是「清完位置又被注回去」。
-        #
-        #   真机上那表现为：手机最终停在**压测途中**的某个点，
-        #   而不是回到真实 GPS —— 而且报告还写着「清理已确认」。
-        #
-        #   `stop()` 内部已经等过一次引擎线程，所以以它为主、
-        #   `_wait_task()` 只作兜底。
-        if to_end:
-            # 跑到终点。用 wait_until_finished 而不是 _wait_task ——
-            # 后者 5 秒就返回，而引擎还在正常注入（findings F15）。
-            finished = await sess.wait_until_finished(
-                timeout=duration_s * 3.0 + 120.0)
-            if not finished:
-                rep.error = rep.error or "引擎在超时前没跑到终点"
+        prep = await sess.prepare()
+        if preset_only:
+            # ★ 只预置，**不启动引擎**。
+            #   位置已经在 prepare() 里预置好，settle_s 就是「保持」窗口 ——
+            #   用户在这段时间里打开地图看蓝点对不对。
+            #   之后直接走 finally 里的 cleanup() 清除位置。
+            rep.preset_lat = float(prep["start"][0])
+            rep.preset_lon = float(prep["start"][1])
+            rep.held_s = float(settle_s)
         else:
-            stopper = asyncio.create_task(_stop_after(sess, duration_s))
-            try:
-                await stopper          # 到点 → stop() → 内部已等过引擎线程
-                await sess._wait_task()  # 再兜一次，确认线程真的退了
-            finally:
-                stopper.cancel()
+            await sess.start()
+
+            # 到点就停。⚠️ 靠计时器停、而不是等引擎跑到路线终点 ——
+            #   否则「10 分钟」实际取决于路线长度，报告里的秒数就失去意义。
+            #
+            # ★ 顺序：**先等到点、再等引擎退出**，反过来会出事。
+            #
+            #   `RunSession._wait_task()` 内部是 `wait_for(..., timeout=5.0)`，
+            #   也就是**最多等 5 秒就返回**，哪怕引擎还在正常跑。
+            #   若先 `_wait_task()`，5 秒后它就返回；接着就去清理 ——
+            #   而引擎线程仍在后台注入，于是「清完位置又被注回去」。
+            #
+            #   真机上那表现为：手机最终停在**压测途中**的某个点，
+            #   而不是回到真实 GPS —— 而且报告还写着「清理已确认」。
+            #
+            #   `stop()` 内部已经等过一次引擎线程，所以以它为主、
+            #   `_wait_task()` 只作兜底。
+            if to_end:
+                # 跑到终点。用 wait_until_finished 而不是 _wait_task ——
+                # 后者 5 秒就返回，而引擎还在正常注入（findings F15）。
+                finished = await sess.wait_until_finished(
+                    timeout=duration_s * 3.0 + 120.0)
+                if not finished:
+                    rep.error = rep.error or "引擎在超时前没跑到终点"
+            else:
+                stopper = asyncio.create_task(_stop_after(sess, duration_s))
+                try:
+                    await stopper          # 到点 → stop() → 内部已等过引擎线程
+                    await sess._wait_task()  # 再兜一次，确认线程真的退了
+                finally:
+                    stopper.cancel()
 
 
     except Exception as exc:                      # noqa: BLE001 —— 报告要的是原文

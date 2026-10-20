@@ -861,6 +861,7 @@ vrun serve                                    # JSON Lines 走 stdin/stdout
 | `src/vrun/preview.py` ★★ | **M4 离线预览**（`vrun soak --dry-run`）：不连手机跑完整轨迹，算出校园 App 在 R1–R5 下的判定（逐点 / 平滑**两种口径**）+ 电子围栏最远距离 + 平滑窗口敏感性。0.2 秒出 19 分钟的结论。见 F16 / F17 |
 | `src/vrun/route.py` 的 `circle_points` / `circle_route` / `circle_route_to` ★★ | **同一个圆重复 N 圈，几何完全重合** ⇒ 围栏半径（15 m）与总里程（3.2 km）解耦。顶点严格在圆上、弦恒在圆内 ⇒ 无噪声时离圆心 ≤ 半径。见 F16 |
 | `src/vrun/geo.py` 的坐标系换算 ★★★ | WGS-84 ↔ GCJ-02（高德/腾讯/微信，偏 366 m）↔ BD-09（百度，偏 1914 m）。反算用不动点迭代（往返误差 0.0000 m，标准的一次抵消是 0.08–2.07 m）。**DVT 注入只认 WGS-84** —— 见 F19 / F21 |
+| `soak --preset-only` ★★ | **只预置位置**并原地保持 `--settle` 秒，不注入轨迹。占用手机 20 分钟前先确认位置对不对用；报告同时给「圆心」与「注入点」两个坐标 | M4 | ✅ |
 | `vrun geo-check` 子命令 ★★ | 坐标体检：输入坐标 + 所属坐标系 ⇒ 打印 WGS-84 位置、各坐标系差异（米）、以及「你是不是从高德抄的」提醒。见 F19 |
 | `Sources/VRunApp/LiveMetrics.swift` ★★ | 会话实时读数的**纯模型**：`tick`/`progress` 的摄入、派生量（剩余/完成度/配速）与显示文案。不 import SwiftUI 视图，可被单测直接驱动（F14） | M3 | ✅ |
 | `Sources/VRunApp/DeviceStatusCard.swift` ★ | 侧栏顶部的设备状态卡：红/黄/绿三态圆点 + 强调色「刷新」按钮 + 失败原因详情（`user_found_problem.md` 第 2 条） | M3 | ✅ |
