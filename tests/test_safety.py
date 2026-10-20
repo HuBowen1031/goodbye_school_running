@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import subprocess
+import threading
 
 from vrun.safety import SafetyGuard
 
@@ -35,6 +36,24 @@ class FakeBridge:
         if self.fail:
             raise RuntimeError("假失败")
         return True
+
+
+class FalseBridge:
+    """``clear()`` 返回 ``False`` —— 设备层如实说「没清掉」。
+
+    ★ 这个替身是 F24 的核心。
+       :meth:`DeviceBridge.clear` 在通道已断时会**吞掉异常并返回 False**
+       （安全红线：清理动作绝不许把异常抛给调用方）。
+       而 :meth:`SafetyGuard.acleanup` 原先**丢弃**了这个返回值，
+       无条件 ``return True`` —— 于是「清理其实失败了」被写成「清理已确认」。
+    """
+
+    def __init__(self) -> None:
+        self.clear_calls = 0
+
+    async def clear(self) -> bool:
+        self.clear_calls += 1
+        return False
 
 
 def _cleanup(guard: SafetyGuard, times: int = 1) -> list[bool]:
@@ -277,3 +296,61 @@ def test_atexit_does_nothing_after_cleanup():
     _cleanup(guard)
     guard._on_atexit()
     assert bridge.clear_calls == 1
+
+
+# ══════════════════════════════════════════════════════════════
+#  F24 —— 清理失败**不许**报成功
+# ══════════════════════════════════════════════════════════════
+
+def test_clear_returning_false_is_reported_as_failure():
+    """★ 设备层说「没清掉」，保险就**不能**说「清好了」。
+
+    2026-10-21 真机实测：隧道在第 653 点被设备掐断，
+    随后的两次 ``clear`` 全部失败（``Channel is closed``），
+    压测报告却写着「清理 已确认」——
+    **手机可能还卡在注入位置上，而报告说没事。**
+    """
+    bridge = FalseBridge()
+    guard = SafetyGuard(bridge)
+    assert _cleanup(guard) == [False], "清理失败被报成了成功"
+
+
+def test_sync_cleanup_reports_failure_when_clear_returns_false(monkeypatch):
+    """★ 同步路径（atexit / signal）同样不许把 False 当成功。
+
+    主循环活着、借循环清理、但设备层说没清掉 ⇒ 必须落到子进程再试，
+    不能直接报「清理完成」。
+
+    ⚠️ 主循环必须跑在**另一个线程**里
+        同步入口 ``fut.result(...)`` 会阻塞**调用线程**。
+        若它和事件循环在同一个线程里，协程就永远等不到执行机会 ——
+        只会卡到 ``SYNC_TIMEOUT`` 然后超时降级，
+        那样测的就不是「借循环」这条路径了（2026-10-21 踩到）。
+    """
+    spawned = []
+    monkeypatch.setattr(subprocess, "run",
+                        lambda cmd, **kw: (spawned.append(cmd), _FakeProc())[1])
+
+    guard = SafetyGuard(FalseBridge())
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        guard._loop = loop          # 模拟「主循环还活着」
+        assert guard.cleanup() is True, "子进程兜底成功后应报成功"
+        assert len(spawned) == 1, "借循环清理失败后必须转子进程再试"
+        assert spawned[0][1:] == ["-m", "vrun", "panic-clear"]
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5)
+        loop.close()
+
+
+def test_sync_cleanup_reports_failure_when_subprocess_also_fails(monkeypatch):
+    """★ 两道都失败 ⇒ 必须报 False（安全红线上不能含糊）。"""
+    monkeypatch.setattr(subprocess, "run",
+                        lambda cmd, **kw: _FakeProc(returncode=2, stderr="boom"))
+    guard = SafetyGuard(FalseBridge())
+    guard._loop = None
+    assert guard.cleanup() is False

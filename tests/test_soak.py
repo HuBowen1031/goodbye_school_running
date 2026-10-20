@@ -64,8 +64,9 @@ def _ready_status():
 class FakeBridge:
     """假设备层。记调用、不碰硬件。"""
 
-    def __init__(self, fail_after: int = -1) -> None:
+    def __init__(self, fail_after: int = -1, clear_fails: bool = False) -> None:
         self.fail_after = fail_after
+        self.clear_fails = clear_fails
         self.set_calls: list[tuple[float, float]] = []
         self.clear_calls = 0
         self.set_timeout = 2.0
@@ -90,6 +91,12 @@ class FakeBridge:
 
     async def clear(self) -> bool:
         self.clear_calls += 1
+        if self.clear_fails:
+            # ★ 复刻 DeviceBridge 的真实行为：清理失败时**吞掉异常并返回 False**。
+            #   设备层绝不许把异常抛给调用方（安全红线），
+            #   代价就是「失败」只能靠返回值表达 —— 上层必须读它。
+            self._status.error = "清除失败：Channel is closed"
+            return False
         return True
 
     async def aclose(self) -> None:
@@ -499,6 +506,65 @@ def test静置时间确实被传给会话():
 # ══════════════════════════════════════════════════════════════
 
 
+# ══════════════════════════════════════════════════════════════
+#  F25 —— 「计划」两个数必须按模式取基数
+# ══════════════════════════════════════════════════════════════
+
+
+def test到点模式的计划距离就是路线长度():
+    """★ 到点模式下 ``duration_s`` 是**超时上限**，不是计划时长。
+
+    2026-10-21 望江那轮真机跑，报告写的是
+    「轨迹长度 计划 5460.3 m / 实际 1810.1 m」——
+    而真实路线只有 3204.4 m。计划距离取错了基数，
+    人对着报告根本没法判断「到底跑完了没有」。
+
+    ⚠️ 用 ``preset_only=True`` 只是为了**不真的跑引擎**
+       （默认剖面有 30 s 起步 ramp，跑一条 400 m 的线要 30 多秒）。
+       「计划」这两个数在开跑之前就定好了，与跑不跑无关。
+    """
+    bridge = FakeBridge()
+    route = make_long_route(400.0, (30.5535, 103.9910))
+    # 故意给一个远大于路线时长的 duration（CLI 就是这么传的：
+    # 路线时长 × 1.6 + 120 s）
+    rep = asyncio.run(soak(bridge, route, duration_s=1000.0,
+                           sample_rate_hz=5.0, speed_kmh=10.0,
+                           to_end=True, preset_only=True))
+    assert rep.planned_s == pytest.approx(route.length()), (
+        f"计划距离应是路线长度 {route.length():.1f} m，"
+        f"实得 {rep.planned_s:.1f} m"
+    )
+
+
+def test到点模式的计划点数按ETA算():
+    """★ 计划采样点数 = ETA × 采样率 —— 进度条的分母必须是真的。
+
+    取错基数时进度条一直显示 32%，看着像才跑了一小截，其实已经过半。
+    """
+    bridge = FakeBridge()
+    route = make_long_route(400.0, (30.5535, 103.9910))
+    rep = asyncio.run(soak(bridge, route, duration_s=1000.0,
+                           sample_rate_hz=5.0, speed_kmh=10.0,
+                           to_end=True, preset_only=True))
+    assert rep.planned_samples == pytest.approx(
+        int(rep.planned_eta_s * 5.0) + 1, abs=1)
+
+
+def test定时模式的计划仍是按duration算():
+    """★ 定时模式不受影响 —— ``duration_s`` 就是计划时长。"""
+    bridge = FakeBridge()
+    route = make_long_route(4000.0, (30.5535, 103.9910))
+    rep = asyncio.run(soak(bridge, route, duration_s=2.0,
+                           sample_rate_hz=5.0, speed_kmh=10.0))
+    assert rep.planned_samples == int(2.0 * 5.0) + 1
+    assert rep.planned_s == pytest.approx(10.0 / 3.6 * 2.0)
+
+
+# ══════════════════════════════════════════════════════════════
+#  --preset-only：只预置位置，不跑轨迹
+# ══════════════════════════════════════════════════════════════
+
+
 class TestPresetOnly:
     """★ 用途：占用手机 20 分钟**之前**先确认位置对不对。
 
@@ -543,6 +609,25 @@ class TestPresetOnly:
                                duration_s=0.0, settle_s=1.0, preset_only=True))
         rep.cleared = False
         text = "\n".join(report_lines(rep))
+        assert "❌" in text
+
+    def test清理失败要如实报出来(self):
+        """★ F24：设备层说「没清掉」，报告不许写「已确认」。
+
+        2026-10-21 真机实测踩到：隧道在第 653 点被设备掐断，
+        随后的 ``clear`` 全部失败（``Channel is closed``），
+        而报告写着「清理 已确认」——
+        **手机可能还卡在注入位置上，而报告却说没事。**
+        """
+        bridge = FakeBridge(clear_fails=True)
+        rep = asyncio.run(soak(bridge, make_long_route(400.0, (30.5535, 103.9910)),
+                               duration_s=1.0, sample_rate_hz=5.0))
+        assert rep.cleared is False, "清理失败了却报「已确认」"
+        text = "\n".join(report_lines(rep))
+        assert "未确认" in text
+        assert "panic-clear" in text, "没确认时要告诉人下一步做什么"
+        # ★ 还要给出**原因** —— 否则人不知道该往哪查
+        assert rep.cleanup_error and "Channel is closed" in rep.cleanup_error
         assert "❌" in text
         assert "清理未确认" in text
 

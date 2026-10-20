@@ -131,17 +131,33 @@ class SafetyGuard:
     async def acleanup(self) -> bool:
         """**异步**清理。正常路径（``finally``）用这个。
 
-        :return: 本次是否真的执行了清理。重复调用返回 ``False``。
+        :return: 本次是否**真的**清理成功了。重复调用返回 ``False``。
+
+        ★ 2026-10-21 真机实测踩到（F24）
+            这个方法原先**丢弃**了 :meth:`DeviceBridge.clear` 的返回值，
+            无条件 ``return True``。而 ``clear()`` 在通道已断时会
+            **吞掉异常并返回 ``False``** —— 两层信息一叠加，
+            「清理其实失败了」就被写成了「清理已确认」。
+            那次真机跑挂的正是这个场景：隧道在第 653 点被设备掐断，
+            随后的两次 ``clear`` 全部失败（``Channel is closed``），
+            报告却写着「清理 已确认」。
+            **手机可能还卡在注入位置上，而报告说没事** ——
+            这是安全红线上的谎报，必须如实。
         """
         if self._cleaned:
             return False
         self._cleaned = True      # ★ 先置位：宁可漏清一次，也不重复清
         try:
-            await self._bridge.clear()
+            ok = await self._bridge.clear()
         except Exception as exc:
             # 到这一步已经没什么能救的了 —— 但仍要记下来，
             # 因为这是「手机可能卡住了」的唯一线索。
             log.error("清理过程抛出异常：%r", exc)
+            return False
+        if not ok:
+            # ★ 设备层已经如实说了「没清掉」—— 这里必须如实传上去。
+            log.error("清理未成功：设备层报告清理失败"
+                      "（手机可能仍卡在注入位置上，请跑 scripts/panic-clear.sh）")
             return False
         return True
 
@@ -159,16 +175,20 @@ class SafetyGuard:
         return self._cleanup_without_loop()
 
     def _cleanup_without_loop(self) -> bool:
-        """在**没有可用 event loop** 的上下文里把清理做掉。"""
+        """在**没有可用 event loop**的上下文里把清理做掉。"""
         loop = self._loop
         if loop is not None and not loop.is_closed():
             try:
                 fut = asyncio.run_coroutine_threadsafe(
                     self._bridge.clear(), loop,
                 )
-                fut.result(timeout=self.SYNC_TIMEOUT)
-                log.info("清理完成（借主循环执行）")
-                return True
+                ok = fut.result(timeout=self.SYNC_TIMEOUT)
+                # ★ 同样必须如实（F24）：设备层说「没清掉」就不能报成功。
+                if not ok:
+                    log.error("清理未成功：设备层报告清理失败，转子进程再试")
+                else:
+                    log.info("清理完成（借主循环执行）")
+                    return True
             except Exception as exc:
                 log.warning("借主循环清理失败，转子进程：%r", exc)
 

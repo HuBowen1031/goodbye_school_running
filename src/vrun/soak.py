@@ -340,8 +340,34 @@ async def soak(
     )
     if center is not None:
         rep.center_lat, rep.center_lon = float(center[0]), float(center[1])
-    rep.planned_samples = int(duration_s * sample_rate_hz) + 1
-    rep.planned_s = speed_kmh / 3.6 * duration_s
+
+    # ⚠️ 刻意**不**自己造 SafetyGuard：:meth:`RunSession.start` 自己会装。
+    #   两个保险同时在，其中一个的「已清理」标记会挡住另一个的真实清理 ——
+    #   而「其实没清掉」恰恰是压测最不能瞒的事。
+    profile = SpeedProfile(v_bar=speed_kmh)
+    noise = GPSNoise(level=noise_level, seed=seed)
+    # 预览 ETA 用 §3.6 的闭式解 —— 与面板上显示的是**同一个函数**，
+    # 所以这里量到的差值就是「用户看到的预估准不准」。
+    rep.planned_eta_s = closed_form_eta(route.length(), speed_kmh, profile)
+
+    # ★ 「计划」这两个数必须按**模式**取基数（F25）。
+    #
+    #   定时模式：``duration_s`` 就是计划时长 ⇒ 计划采样点数/距离照它算。
+    #
+    #   到点模式：``duration_s`` 是**引擎超时上限**（CLI 传的是
+    #   路线时长 × 1.6 + 120 s），不是计划时长。
+    #   拿它当基数的话，2026-10-21 那轮望江真机跑就报成了
+    #   「计划 5460.3 m / 1966 个点」—— 而真实路线只有 **3204.4 m / 1154 个点**。
+    #   进度条也因此一直显示 32%，看着像才跑了一小截，其实已经过半。
+    #
+    #   到点模式的「计划」是**路线本身**：距离 = 路线长度，
+    #   时长 = 闭式解 ETA（与面板同一个函数）。
+    if to_end:
+        rep.planned_samples = int(rep.planned_eta_s * sample_rate_hz) + 1
+        rep.planned_s = route.length()
+    else:
+        rep.planned_samples = int(duration_s * sample_rate_hz) + 1
+        rep.planned_s = speed_kmh / 3.6 * duration_s
 
     ticks = 0
 
@@ -371,14 +397,6 @@ async def soak(
             rep.error = (f"{payload.get('code', 'error')}: "
                          f"{payload.get('message', '')}").strip()
 
-    # ⚠️ 刻意**不**自己造 SafetyGuard：:meth:`RunSession.start` 自己会装。
-    #   两个保险同时在，其中一个的「已清理」标记会挡住另一个的真实清理 ——
-    #   而「其实没清掉」恰恰是压测最不能瞒的事。
-    profile = SpeedProfile(v_bar=speed_kmh)
-    noise = GPSNoise(level=noise_level, seed=seed)
-    # 预览 ETA 用 §3.6 的闭式解 —— 与面板上显示的是**同一个函数**，
-    # 所以这里量到的差值就是「用户看到的预估准不准」。
-    rep.planned_eta_s = closed_form_eta(route.length(), speed_kmh, profile)
     sess = RunSession(bridge=bridge, emit=emit, settle_s=settle_s,
                       profile=profile, noise=noise, sample_rate=sample_rate_hz)
 
@@ -467,6 +485,11 @@ async def soak(
             rep.cleared = bool(res.get("cleared"))
         except Exception as exc:                  # noqa: BLE001
             rep.cleanup_error = f"{type(exc).__name__}: {exc}"
+        if not rep.cleared and not rep.cleanup_error:
+            # ★ 清理没确认时，把**原因**带出来（F24）。
+            #   设备层把异常吞进 `DeviceStatus.error` 了 ——
+            #   不去读它，报告就只剩一句「未确认」，人不知道该往哪查。
+            rep.cleanup_error = bridge.status().error
     return rep
 
 

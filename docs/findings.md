@@ -1335,6 +1335,130 @@ F19 定了「成都一带 GCJ-02 偏 362 m、BD-09 偏 1893 m」，
 
 ---
 
+## F24 ★ 报告谎报「清理已确认」—— 安全红线上的谎报
+
+**涉及**：`src/vrun/safety.py`、`src/vrun/soak.py`
+
+### 现象（2026-10-21 望江真机跑）
+
+那轮跑挂在第 653 个注入点（12 分 35 秒），原因是**USB 传输层断了**：
+
+```
+userspace tunnel transport closed (device disconnected?); tearing down
+got connection reset in tun-read-fd64:de26:6d6f::2
+会话异常终止
+vrun.device.InjectionError: 注入 30.63072,104.08238 失败（已重试 2 次）：Channel is closed
+```
+
+日志里有两行「清除虚拟定位失败（已吞掉异常…）：ConnectionTerminatedError('Channel is closed')」，
+**而报告却写着**：
+
+```
+清理        已确认
+```
+
+### 问题
+
+「清理其实失败了」被写成了「清理已确认」。两条独立的信息丢失叠在一起：
+
+| 层 | 干了啥 | 后果 |
+| --- | --- | --- |
+| `DeviceBridge.clear()` | 吞掉异常、返回 `False` | **符合**安全红线（清理动作不许抛异常） |
+| `SafetyGuard.acleanup()` | **丢弃** `clear()` 的返回值，无条件 `return True` | 「失败」被改写成「成功」 |
+| `RunSession.cleanup()` | 原样转交 `cleared=True` | 继续往上骗 |
+| `soak` | `rep.cleared = True` | 报告写「清理 已确认」 |
+
+⇒ **手机可能还卡在注入位置上，而报告说没事。**
+这是 F15（「压测工具本身会骗人」）的同一个家族，但性质更重 ——
+F15 骗的是「跑完了没」，F24 骗的是「手机安全了没」。
+
+### 修法
+
+1. `SafetyGuard.acleanup()`：读 `clear()` 的返回值，`False` ⇒ 返回 `False`。
+2. `SafetyGuard._cleanup_without_loop()`：同样读 `fut.result()` 的返回值；
+   借循环清理返回 `False` ⇒ **转子进程再试**（`panic-clear` 正是为这个场景存在的）。
+3. `soak.py`：清理没确认时，把**原因**带进报告
+   （设备层把异常吞进了 `DeviceStatus.error`，不去读它，
+   报告就只剩一句「未确认」，人不知道该往哪查）。
+
+### 验收
+
+**4 组变异全部命中**：
+
+| 变异 | 被哪条测试抓住 |
+| --- | --- |
+| 保险不再看设备层的返回值 | `test_clear_returning_false_is_reported_as_failure` |
+| 同步路径又丢掉返回值 | `test_sync_cleanup_reports_failure_when_clear_returns_false` |
+| 报告不再带清理失败的原因 | `test清理失败要如实报出来` |
+| 压测无条件报告清理已确认 | `test清理失败要如实报出来` |
+
+### 顺带查清：隧道为什么断
+
+`pymobiledevice3` 的 `userspace_tunnel.py::_watch_transport_closed` 的 docstring 写得很直白：
+
+> Tear the tunnel down when its outer transport dies
+> (e.g. **the USB cable is pulled**: usbmuxd closes the CoreDeviceProxy connection…)
+
+而事后 `panic-clear` 第一次报 `No such service: com.apple.instruments.dtservicehub`
+（该服务**只在设备解锁时**存在），再试就成功了。
+⇒ **最可能是 iPhone 自动锁屏导致开发者服务被挂起、USB 传输随之断开**。
+
+⚠️ 仍未定论。下一轮必须先把「自动锁定」设成「永不」。
+
+---
+
+## F25 ★ 报告的「计划」数字取错了基数
+
+**涉及**：`src/vrun/soak.py`
+
+### 现象（同一轮真机跑）
+
+```
+产出采样    653 点
+轨迹长度    计划 5460.3 m / 实际 1810.1 m
+```
+
+而真实路线只有 **3204.4 m / 1154 个点**（34 圈 × 94.25 m，10 km/h）。
+进度条也一直显示「…630/1966 点（32%）」—— 其实当时已经跑过半。
+
+### 根因
+
+CLI 的到点模式把 `duration_s` 传成**引擎超时上限**，不是计划时长：
+
+```python
+budget = route.length() / (speed / 3.6) * 1.6 + 120.0     # 1965.8 s
+```
+
+而 `soak()` 一律拿 `duration_s` 当计划时长的基数：
+
+```python
+rep.planned_samples = int(duration_s * sample_rate_hz) + 1      # 1966 ❌
+rep.planned_s = speed_kmh / 3.6 * duration_s                    # 5460.3 ❌
+```
+
+⇒ 定时模式没问题（那里 `duration_s` **就是**计划时长），
+到点模式全线偏 1.6 倍。
+
+### 修法
+
+按模式取基数：
+
+- 定时模式：照旧按 `duration_s` 算。
+- 到点模式：距离 = **路线长度**，时长 = **闭式解 ETA**（与面板同一个函数）。
+
+### 验收
+
+**3 组变异全部命中**：计划距离退回用 `duration` 算 / 计划点数退回用 `duration` 算 /
+定时模式被改成按路线长度算。
+
+### 为什么这条值得单独记
+
+> **「超时上限」和「计划」是两个不同的数，被同一个变量装了很久。**
+> 定时模式里两者相等，所以错的地方**永远不会在定时模式里暴露** ——
+> 只有到点模式才露馅，而到点模式正是 M4 验收要用的那个。
+
+---
+
 ## 汇总
 
 | 编号 | 类型 | 影响 | 处置 |
@@ -1362,3 +1486,5 @@ F19 定了「成都一带 GCJ-02 偏 362 m、BD-09 偏 1893 m」，
 | F21 | ★ **只和自己比就抓不到** | GCJ-02 纬向分母写成 `sqrt_magic²` ⇒ 12 cm 偏差，往返照样闭合 | 独立重写标准算法做交叉验证（分歧降到 0）；见 F21 |
 | F22 | ★ **超时无降级** | 连续 3 次 2 s 超时 ⇒ 320 s 的会话整体作废 | ✅ **已修**：阈值 2→5 s + 超时/硬失败分流 + 降级继续（连续 5 次才终止）；10 组变异全中；见 F22 |
 | F23 | ★ **坐标系靠推断判不了** | 偏移量算得出，但「这坐标属于哪个坐标系」两个假设都活着 | ✅ 让地图把点画出来：卫星底图上跑道正中央 = GCJ-02；见 F23 |
+| F24 | ★ **安全红线上的谎报** | 清理其实失败，报告却写「清理 已确认」——手机可能还卡在注入位置上 | ✅ 保险读设备层的返回值 + 借循环失败转子进程 + 报告带原因；4 组变异全中；见 F24 |
+| F25 | ★ **「计划」取错基数** | 到点模式把「超时上限」当计划时长 ⇒ 报「计划 5460 m」而路线只有 3204 m | ✅ 按模式取基数（到点模式用路线长度 + 闭式解 ETA）；3 组变异全中；见 F25 |
