@@ -8,10 +8,10 @@
 >
 > | 项 | 值 |
 > | --- | --- |
-> | 版本 | **v13（2026-10-19）** |
+> | 版本 | **v14（2026-10-21）** |
 > | 对应 `works.md` | v10 |
 > | 语言约定 | 代码注释、文档、GUI 文案**一律中文** |
-> | 测试规模 | Python **448 passed** / Swift **79 passed** |
+> | 测试规模 | Python **464 passed** / Swift **79 passed** |
 >
 > ⚠️ **重要前提（v13 更新）**：本文 v1 写作时仓库内**尚无任何代码文件**，
 > 全文描述的都是**待建文件的规格**。截至 v7，**M1 / M2 / M3 均已落地**，
@@ -605,8 +605,12 @@ class DeviceBridge:
   Python API 为 `LocationSimulation`（async context manager）。
 - **`set_location` 内部不做清理。** 清理是 `SafetyGuard` 的独占职责（见 §4.2.2）——
   两处都管清理必然导致逻辑分叉，而清理逻辑一旦分叉就是安全红线。
-- 每次 `set` 带 `timeout`（默认 2 s）与**有限重试**（例如 2 次）。失败必须抛结构化异常，
+- 每次 `set` 带 `timeout`（默认 **5 s**，见下方 F22 注）与**有限重试**（例如 2 次）。失败必须抛结构化异常，
   **不许静默吞掉**：静默失败会让轨迹出现无声的空洞，而日志上一切正常。
+- 抛出的 `InjectionError` 必须带 `timeout_exhausted` 标记，**区分「超时」与「其他错误」**：
+  超时是**可恢复**的（设备多半还连着），上层据此**降级继续**；
+  其他错误（隧道掉了 / 通道断了）重试没有意义，上层据此**立刻失败**。
+  标记由**设备层如实给出** —— 不让上层去猜异常文本（F22）。
 
 **实测核对过的上游 API（2026-10-14，11.27.2）—— 非凭记忆**
 
@@ -964,7 +968,7 @@ vrun serve                                    # JSON Lines 走 stdin/stdout
 
 ---
 
-## 6. 测试 · `tests/`（**22** 个文件）
+## 6. 测试 · `tests/`（**23** 个文件）
 
 | 文件 | 覆盖内容 | 里程碑 |
 | --- | --- | --- |
@@ -987,6 +991,7 @@ vrun serve                                    # JSON Lines 走 stdin/stdout
 | `tests/test_coord_system.py` ★★★ | 坐标系换算：往返闭合、偏移量级与**方向**、**黄金值**（钉位置而非量级 —— BD-09 漏一步后偏移量仍在旧区间内）、`out_of_china` 判据。28 条 | M4 |
 | `tests/test_cli.py` 的 `--noise` 同步组与 `--center` 解析组 ★ | 档位**逐一**与 `GPSNoise.LEVELS` 比对并**逐个喂给引擎**（F18 回归）；`--center` 走 argparse `type=`，非法坐标在**解析期**就被拒（不甩 traceback）；`--dry-run` 一行设备代码都跑不到 | M4 |
 | `tests/test_soak.py` | 判定分支 + **无头整链路**（压测工具自身的正确性 —— F15 的教训：工具会骗人） | M4 |
+| `tests/test_injection_resilience.py` ★★ | **F22**：注入超时**降级继续**而不是毁掉整场验收；超时与硬失败**分流**（`timeout_exhausted` 标记）；连续失败**有上限**、成功一次**清零**；线程侧等待余量**严格大于**设备最坏耗时；降级在报告里**看得见**。10 条 | M4 |
 | `tests/test_session_golden.py` | 跨语言基准 `tests/golden/session_events.json` 的 Python 侧断言 | M3 |
 | `tests/golden/session_events.json` ★ | 侧车事件流的**跨语言契约**（Python 与 Swift 两侧共用） | M3 |
 | `tests/test_coord_system.py` | WGS-84 / GCJ-02 / BD-09 换算与 `--coord-system` 透传 | M4 |
@@ -1147,15 +1152,15 @@ environment.yml            ← conda 层：python 版本、conda 包
 | **M1** 轨迹内核与估算 | ① 纯计算层 7（`geo`/`route`/`profile`/`noise`/`engine`/`estimate`/`preview`）+ `ipc.py` + `recorder.py` + `cli.py` + `__init__.py` + `__main__.py`（12）+ `tests/` 10 | 22 | ❌ |
 | **M2** 设备桥与会话 | `device.py`、`safety.py`、`session.py`、`scripts/panic-clear.sh`（4）+ `tests/` 3 | 7 | ✅ **真机已验**（6 点移动测试） |
 | **M3** macOS GUI | `app/VRun/` 全部（`Package.swift` + 14 源 + 6 测试 = 21）+ `tests/` 2 | 23 | ❌（可对假数据离线调试） |
-| **M4** 冒烟验证 | `src/vrun/soak.py`、`docs/findings.md`（2）+ `tests/` 4 | 6 | ✅ |
+| **M4** 冒烟验证 | `src/vrun/soak.py`、`docs/findings.md`（2）+ `tests/` 5 | 7 | ✅ |
 | **M5** 打包与文档 | `scripts/build_app.sh`（`README.md` ⬜ 待建） | 1 | ❌ |
 | **工具（跨阶段）** | `scripts/offset_editor.py`、`scripts/offset_editor_template.html`、`tests/test_offset_editor.py`（3） | 3 | ❌ |
 | **文档（跨阶段）** | `docs/file-manifest.md`（本文） | 1 | — |
 | **运行时** | `logs/`（**不入库**） | 1 | — |
-| **合计** | | **75** | |
+| **合计** | | **76** | |
 
-> **75 项 = 74 个文件 + 1 个运行时目录。**
-> 其中 **M1 的 22 项 + M3 的 23 项 + 工具的 3 项 = 48 项（约 64%）可以全离线开发与验证**。
+> **76 项 = 75 个文件 + 1 个运行时目录。**
+> 其中 **M1 的 22 项 + M3 的 23 项 + 工具的 3 项 = 48 项（约 63%）可以全离线开发与验证**。
 
 > ⚠️ 本表在 v6 之前长期与正文不一致：分项加总 53、合计却写 54、页首又写「48 个文件」，
 > 且还列着**从未实现**的 `bootstrap_env.sh` / `preflight.sh`。
@@ -1164,6 +1169,9 @@ environment.yml            ← conda 层：python 版本、conda 包
 > ⚠️ **v12 重新核对**：v11 之后仓库又长了一批文件（Swift 侧 12 → 14 源 / 1 → 6 测试，
 > Python 侧新增 `soak.py` 与 4 个测试文件），本表与页首计数一并重建为
 > **74 个文件 + 1 个运行时目录**。另：`user_found_problem.md` 此前未登记，一并补入。
+>
+> ⚠️ **v14 复核**：新增 `tests/test_injection_resilience.py`（F22），
+> M4 的测试 4 → **5** 个，合计 75 → **76** 项。
 
 ---
 
@@ -1190,6 +1198,7 @@ environment.yml            ← conda 层：python 版本、conda 包
 
 | 日期 | 版本 | 变更 |
 | --- | --- | --- |
+| 2026-10-21 | **v14** | **F22 修复 + F23 坐标判定**：① `device.py`：单次注入超时 **2 s → 5 s**（真机长尾 max 2003 ms，2 s 阈值**正好卡在长尾上** —— 把「慢」当成了「死」）；`InjectionError` 增加 `timeout_exhausted` 标记，**由设备层如实给出**；② `session.py`：超时**降级继续**（跳点 + 计数 + 发 `error` 事件 code `injection_degraded`），**连续** 5 次才放弃会话，成功一次就清零；非超时类错误（通道断了）**立刻失败**不走降级；`_inject_timeout()` 改为**严格大于**设备层最坏耗时（原先与最坏**恰好相等**，会把 `InjectionError` 变成 `TimeoutError` 而丢掉「超时」这个信息）；③ `soak.py` 报告新增「降级跳过 N 点」一行；④ 新增 `tests/test_injection_resilience.py`（10 条），**10 组变异全部命中**；⑤ 查明望江坐标 `30.628212, 104.084842` 是 **GCJ-02**（真值 WGS-84 `30.630627, 104.082312`）—— 靠**让地图把点画出来**判定（卫星底图上跑道正中央），登记 F23；⑥ 测试规模 448 → **464** Python（Swift 79 不变）；⑦ §6 测试 22 → **23** 个文件 |
 | 2026-10-19 | **v12** | **离线轨迹点拖拽编辑器（工具层）**：① 新增 `scripts/offset_editor.py` + `scripts/offset_editor_template.html` —— 读 `logs/*.csv` 生成**自包含** HTML，浏览器里用鼠标拖动采样点，实时看「相对原始位置」与「相对理想路径」两种偏移，导出为新 CSV（**原文件不动**）；② 新增 `tests/test_offset_editor.py`（13 条），锁住参考路径拟合的三条命门 —— 缩放必须**同时**作用于几何（漏了残差 2.2 m → 30+ m，且不报错）、平移必须由**最小二乘**吃掉（路线缩放锚点差异实测 31 m）、同形状路线按**长度**择优（`near_me.json` 与 `s2_3k2.json` 是同一个矩形，残差打平）；③ §6 测试 16 → **21** 个文件、§7 脚本 3 → **5** 个；④ 计数全面重核：v11 之后仓库又长了一批文件，§10 交叉表与页首计数由 **55 项重建为 75 项**（74 个文件 + 1 个运行时目录），`user_found_problem.md` 此前未登记，一并补入；⑤ 记录：**Python 446 passed**（共收集 448），另有 **2 条在建用例待修**（`test_cli.py` 的 GCJ-02 期望值 30.630629 vs 实得 30.630627，差 0.2 m —— 属坐标系功能在建，与本轮无关）—— **已在 v13 修好**（黄金值随 12 cm 偏差的修正而更新，现 448 passed 全绿） |
 | 2026-10-14 | **v6** | **修 F12「测试偷连真机」+ 计数纠偏**：① 新增 §6.2「测试绝不碰真机」纪律，护栏做在 fixture 层；② §7 脚本 5 → **3 个**（删除从未实现的 `bootstrap_env.sh` / `preflight.sh`）；③ `src/vrun` 计数 13 → **14**、§4.3 小节顺序修正（4.3.4 原先物理位置排在 4.3.2 之前）；④ §4.3.3 的「占位 / 待建」描述改为实装态，补上漏记的 `gpx` 子命令；⑤ §3 `environment.yml` 「待建」→「已存在」；⑥ §6 补齐 M2 三条测试文件（原表 11 行 / 实际 14 个） |
 | 2026-10-14 | **v5** | **M2 完成 + 真机验证通过**：① 新增 §4.3.4 `session.py`（会话状态机 + 跨线程边界的三个解法），编排层 4 → 5 个文件；② §4.2 标注「真机 6 点移动测试通过，用户肉眼确认」；③ 新增 `tests/test_session.py`（23 条），测试 13 → 14 个文件、规模计数 53 → 54；④ 引入 findings **F11**（三个静默失效的会话 bug） |

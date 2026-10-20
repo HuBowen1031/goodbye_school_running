@@ -91,7 +91,22 @@ class TunnelError(DeviceError):
 
 
 class InjectionError(DeviceError):
-    """单点注入失败（超时、重试用尽）。"""
+    """单点注入失败（超时、重试用尽）。
+
+    :param timeout_exhausted: ``True`` 表示失败原因是**连续超时**；
+        ``False`` 表示是别的错误（隧道掉了 / 通道断了 / 参数非法）。
+
+    ★ 为什么要区分
+        「超时」是**可恢复**的瞬时抖动 —— 设备还连着，只是这一下慢了。
+        「其他错误」是**不可恢复**的 —— 通道已经断了，重试没有意义
+        （见 :meth:`DeviceBridge.set_location` 里的分支）。
+        上层要按这个区别决定「降级继续」还是「立刻失败」，
+        所以这个标记必须由**设备层**如实给出，不能让上层去猜异常文本。
+    """
+
+    def __init__(self, message: str, *, timeout_exhausted: bool = False) -> None:
+        super().__init__(message)
+        self.timeout_exhausted = timeout_exhausted
 
 
 # ══════════════════════════════════════════════════════════════
@@ -225,7 +240,7 @@ class DeviceBridge:
         serial: Optional[str] = None,
         *,
         require_usb: bool = True,
-        set_timeout: float = 2.0,
+        set_timeout: float = 5.0,
         set_retries: int = 2,
     ) -> None:
         """
@@ -233,6 +248,14 @@ class DeviceBridge:
         :param require_usb: 只认 USB。无线设备延迟大且隧道不稳，本项目不用。
         :param set_timeout: 单次 ``set`` 的超时（秒）。
         :param set_retries: 超时后的重试次数。**有限重试**，不做无限重试。
+
+        ⚠️ ``set_timeout`` 默认 **5 s**，不是 2 s
+            真机实测（2026-10 望江那轮）的注入延迟分布：
+            p50 7 ms / p90 8 ms / p99 60 ms / **max 2003 ms**。
+            2 s 的阈值**正好卡在长尾上** —— 那 3 次「超时」里，
+            至少有一次其实只跑了 2003 ms，**慢，但没失败**，
+            却被当成失败重试了一遍（findings F22）。
+            5 s 给了 2.5 倍余量，把「慢」和「死」区分开。
         """
         self.serial = serial
         self.require_usb = require_usb
@@ -448,6 +471,7 @@ class DeviceBridge:
         tries = self.set_retries if retries is None else retries
 
         last: Optional[BaseException] = None
+        timed_out = False
         async with self._lock:
             for attempt in range(tries + 1):
                 # ★ 计时**只包住这一次尝试**，不是整个重试循环。
@@ -458,6 +482,7 @@ class DeviceBridge:
                     await asyncio.wait_for(self._loc.set(lat, lon), timeout=tmo)
                 except asyncio.TimeoutError as exc:
                     last = exc
+                    timed_out = True
                     self._stats.attempt_ms.append((time.perf_counter() - t0) * 1000.0)
                     self._stats.timeouts += 1
                     log.warning("注入超时 (%.1fs, 第 %d/%d 次)：%.5f,%.5f",
@@ -465,6 +490,7 @@ class DeviceBridge:
                 except Exception as exc:
                     # 非超时类错误（隧道掉了 / 通道断了）重试没有意义
                     last = exc
+                    timed_out = False
                     self._stats.attempt_ms.append((time.perf_counter() - t0) * 1000.0)
                     break
                 else:
@@ -480,7 +506,8 @@ class DeviceBridge:
         self._status.dropped += 1
         self._set_status(error=f"注入失败：{last}")
         raise InjectionError(
-            f"注入 {lat:.5f},{lon:.5f} 失败（已重试 {tries} 次）：{last}"
+            f"注入 {lat:.5f},{lon:.5f} 失败（已重试 {tries} 次）：{last}",
+            timeout_exhausted=timed_out,
         ) from last
 
     # ── 清理 ────────────────────────────────────────────────

@@ -60,6 +60,14 @@ class SoakResult:
     produced_samples: int = 0
     injected: int = 0
     dropped: int = 0
+    #: 因**注入超时**被跳过的点数（findings F22 的降级路径）。
+    #:
+    #: ★ 与 ``dropped`` 的关系
+    #:     ``dropped`` 是设备层「没能确认投递」的全部失败数（硬失败 + 超时）。
+    #:     ``injection_degraded`` 是其中**因为超时**而走了降级路径的部分 ——
+    #:     也就是说，它**没能让会话崩掉**，但点确实被跳过了。
+    #:     两者都非零就说明轨迹上有洞，App 那边可能算不准。
+    injection_degraded: int = 0
 
     # ── 延迟分布（毫秒）──
     latency: dict = field(default_factory=dict)
@@ -134,6 +142,7 @@ class SoakResult:
             "produced_samples": self.produced_samples,
             "injected": self.injected,
             "dropped": self.dropped,
+            "injection_degraded": self.injection_degraded,
             "latency_ms": self.latency,
             "planned_distance_m": self.planned_s,
             "produced_distance_m": self.produced_s,
@@ -196,6 +205,9 @@ def report_lines(r: SoakResult) -> list[str]:
         f"产出采样    {r.produced_samples} 点",
         f"注入成功    {r.injected} 点    丢失 {r.dropped} 点",
     ]
+    if r.injection_degraded:
+        out.append(f"降级跳过    {r.injection_degraded} 点"
+                   "（注入超时，会话没崩但点被跳过）")
     if not r.preset_only:
         out += [
             f"轨迹长度    计划 {r.planned_s:.1f} m / 实际 {r.produced_s:.1f} m",
@@ -424,6 +436,7 @@ async def soak(
         rep.wall_s = time.perf_counter() - t0
         st = bridge.status()
         rep.injected, rep.dropped = st.injected, st.dropped
+        rep.injection_degraded = sess.injection_degraded
         rep.latency = bridge.injection_stats().summary()
         rep.produced_samples = ticks
         stats = sess.stats

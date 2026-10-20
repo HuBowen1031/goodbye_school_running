@@ -47,7 +47,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
 
-from .device import DeviceBridge
+from .device import DeviceBridge, InjectionError
 from .engine import RunStats, Sample, TrackEngine
 from .noise import GPSNoise
 from .profile import SpeedProfile
@@ -99,14 +99,35 @@ class RunSession:
     noise: Optional[GPSNoise] = None
     sample_rate: float = 1.0
 
+    #: 连续多少次**注入超时**之后就放弃整个会话（findings F22）。
+    #:
+    #: ★ 为什么要有这个阈值，而不是「一超时就崩」
+    #:     2026-10 真机那轮：注入延迟 p50 7 ms / p90 8 ms / p99 60 ms /
+    #:     max **2003 ms**，而超时阈值当时是 2 s —— **长尾正好卡在阈值上**。
+    #:     于是一次瞬时抖动（设备当时在忙）连着 3 次超时，
+    #:     整个 19 分钟的会话就崩了，前 320 秒的成绩全废。
+    #:
+    #:     超时是**可恢复**的：消息大概率已经发到手机了（DTX 的发送先于回执），
+    #:     设备还连着。所以正确做法是**降级继续** —— 跳过一个点、如实记一笔、
+    #:     继续跑完 —— 而不是让一次抖动废掉整场验收。
+    #:
+    #:     但也不能无限容忍：设备真的掉线时，每点都会超时，
+    #:     继续跑只是在刷一串没有意义的失败。所以连续失败够多就真的失败。
+    max_injection_failures: int = 5
+
     phase: str = Phase.IDLE
     stats: Optional[RunStats] = None
+    #: 因注入超时被跳过的点数。**非零就说明轨迹上有洞**，必须能看见。
+    injection_degraded: int = 0
 
     _guard: SafetyGuard = field(default=None, repr=False)
     _task: Optional[asyncio.Task] = None
     _loop: Optional[asyncio.AbstractEventLoop] = None
     _samples: list[Sample] = field(default_factory=list, repr=False)
     _t0: float = 0.0
+    #: 连续注入失败次数。成功一次就清零 —— 「连续」才算数，
+    #: 因为隔一个成功再失败一次说明设备是活的。
+    _consecutive_injection_failures: int = 0
     #: 停止**请求**。与 ``phase`` 分开是有意的 ——
     #: ``phase`` 是对外报告的状态，``stop()`` 里必须**先置这个再等线程**，
     #: 而那一刻 phase 还该保持 RUNNING 才对。合成一个字段会让「停止」失效。
@@ -322,11 +343,40 @@ class RunSession:
         """
         self._samples.append(sample)
 
-        # ① 注入 —— **严格**：失败必须让整个会话失败。
-        #    静默吞掉的后果是轨迹出现无声的空洞，而统计数字一切正常
-        #    （works.md §4.3.4：异常恢复要明确报错，不静默失败）。
-        self._submit_coro(self.bridge.set_location(sample.lat, sample.lon),
-                          strict=True)
+        # ① 注入。
+        #    ⚠️ 这里曾经是「失败必须让整个会话失败」（works.md §4.3.4：
+        #    异常恢复要明确报错，不静默失败）。但那条纪律针对的是
+        #    **静默吞掉** —— 轨迹出现无声的空洞，而统计数字一切正常。
+        #    现在改成**降级继续**：跳过的点会被计数、会发 ``error`` 事件、
+        #    会出现在压测报告里 —— 一样「明确报错」，
+        #    但不会让一次瞬时抖动废掉整场 19 分钟的验收（F22）。
+        #
+        #    「超时」和「其他错误」分开处理：
+        #    · 超时 —— 设备多半还活着，只是这一次慢了 ⇒ 降级继续
+        #    · 其他 —— 通道断了，重试没意义 ⇒ 立刻失败
+        try:
+            self._submit_coro(self.bridge.set_location(sample.lat, sample.lon),
+                              strict=True)
+        except InjectionError as exc:
+            if not exc.timeout_exhausted:
+                raise          # 通道断了 —— 没有降级的余地
+            self._consecutive_injection_failures += 1
+            self.injection_degraded += 1
+            if self._consecutive_injection_failures >= self.max_injection_failures:
+                log.error("连续 %d 次注入超时，放弃会话",
+                          self._consecutive_injection_failures)
+                raise
+            log.warning("注入超时（第 %d 次连续，跳过该点）：%r",
+                        self._consecutive_injection_failures, exc)
+            self._submit_coro(self._emit_error(
+                "injection_degraded",
+                f"注入超时，已跳过该点（连续 {self._consecutive_injection_failures} 次）：{exc}",
+                hint="设备多半还连着，已跳过该点继续跑；"
+                     "若连续失败太多会自行终止"))
+            return
+        else:
+            # 成功一次就清零 —— 「连续失败」才说明设备真的出问题了
+            self._consecutive_injection_failures = 0
         # ② 再把状态发回 GUI —— 宽松：GUI 挂了不该拖垮会话。
         self._submit_coro(self._tick_and_progress(sample))
 
@@ -352,8 +402,17 @@ class RunSession:
             log.warning("从工作线程回传事件失败：%r", exc)
 
     def _inject_timeout(self) -> float:
-        """注入 + 发事件的超时余量。给得比单点 set 宽，因为还要回传事件。"""
-        return max(self.bridge.set_timeout * (self.bridge.set_retries + 1), 10.0)
+        """注入 + 发事件的超时余量。给得比单点 set 宽，因为还要回传事件。
+
+        ⚠️ 必须**严格大于**设备层最坏情况的注入耗时
+            设备层最坏 = ``set_timeout × (set_retries + 1)``（每次尝试都超时）。
+            早先这里取 ``max(那个值, 10.0)``，和设备层**恰好相等** ——
+            线程侧的 ``fut.result(timeout=...)`` 会在注入刚要失败时先超时，
+            于是抛出来的不是 :class:`InjectionError` 而是 ``TimeoutError``，
+            「超时」这个信息就丢了，降级逻辑也就无从判断。
+            现在留 5 s 余量。
+        """
+        return max(self.bridge.set_timeout * (self.bridge.set_retries + 1) + 5.0, 15.0)
 
     def _sleeper(self, gap: float) -> None:
         """可中断的等待 —— :meth:`TrackEngine.run` 的 ``sleeper`` 注入点。
@@ -417,6 +476,7 @@ class RunSession:
             "mean_speed_kmh": self.stats.mean_speed_kmh,
             "samples": self.stats.samples,
             "completed": self.stats.completed,
+            "injection_degraded": self.injection_degraded,
         }
 
     def _progress(self, elapsed: float, lat: float, lon: float,
@@ -460,9 +520,17 @@ class RunSession:
         except Exception as exc:
             log.warning("事件 %s 发出失败：%r", name, exc)
 
-    async def _emit_error(self, code: str, message: str) -> None:
-        await self._emit("error", code=code, message=message,
-                         hint="可执行 scripts/panic-clear.sh 清除残留的虚拟定位")
+    async def _emit_error(self, code: str, message: str,
+                          hint: Optional[str] = None) -> None:
+        """发一个 ``error`` 事件。
+
+        :param hint: 提示语。``None`` = 用默认的「跑 panic-clear 清残留」。
+            降级事件**不该**用那句 —— 位置是好的，不需要清理，
+            说「请清理残留」反而会让人以为出了大事。
+        """
+        if hint is None:
+            hint = "可执行 scripts/panic-clear.sh 清除残留的虚拟定位"
+        await self._emit("error", code=code, message=message, hint=hint)
 
     async def _wait_task(self) -> None:
         """等引擎线程结束（带超时，绝不无限等）。"""
